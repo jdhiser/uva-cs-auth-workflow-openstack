@@ -1,0 +1,91 @@
+{
+	"nodes":
+	[
+		{ 
+			"name": "dc1",
+			"os": "win2k22",
+			"domain": "castle",
+			"roles": [ "domain_controller_leader", "windows" ]
+		},
+		{
+			"name": "user-host_1",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "user-host_2",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "user-host_3",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "user-host_4",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "user-host_5",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "ops-host_1",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "ops-host_2",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "ops-host_3",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "ent-server_0",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "shared" ]
+		},
+		{
+			"name": "ent-server_1",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "shared" ]
+		},
+		{
+			"name": "ent-server_2",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "shared" ]
+		},
+		{
+			"name": "ops-server",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "shared" ]
+		}
+	]
+}
