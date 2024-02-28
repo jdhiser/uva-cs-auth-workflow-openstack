@@ -12,32 +12,13 @@ from joblib import Parallel, delayed
 
 
 
-def load_configs(cloud_config_filename, enterprise_filename):
-    with open(cloud_config_filename) as f:
+def load_json(filename):
+    with open(filename) as f:
         # Read the file
-        cloud_config = json.load(f)
+        file = json.load(f)
 
-    with open(enterprise_filename) as f:
-        # Read the file
-        enterprise =  json.load(f)
+    return file
 
-
-    return cloud_config, enterprise
-
-def deploy_enterprise(cloud_config,enterprise):
-    ret = {}
-    ret["deploy_start"] = str(datetime.now())
-    match cloud_config['cloud_type'].lower():
-        case 'openstack':
-           print("Using openstack cloud") 
-           cloud =  OpenstackCloud(cloud_config)
-        case _:
-            print("Cannot find cloud type: " + cloud_config['cloud_type'])
-
-    ret['deployed'] = cloud.deploy_enterprise(enterprise)
-
-    ret["deploy_end"] = str(datetime.now())
-    return ret
 
 def extract_creds(enterprise_built,name):
     details = next(filter( lambda x: name == x['name'], enterprise_built['deployed']['nodes']))
@@ -145,31 +126,29 @@ def main():
 
     json_output = {}
     try:
-        json_output["start_time"] = str(datetime.now())
-        cloud_config_filename = sys.argv[1]
-        enterprise_filename  = sys.argv[2]
-        cloud_config,enterprise = load_configs(cloud_config_filename, enterprise_filename)
+        json_output["setup-start_time"] = str(datetime.now())
+        setup_output_filename = sys.argv[1]
+        setup_output = load_json(setup_output_filename)
 
-        print("Deploying nodes.")
-        enterprise_built = deploy_enterprise(cloud_config,enterprise)
-        print("Deploying nodes, completed.")
+        enterprise_built = setup_output['enterprise_built']
+        enterprise = setup_output['enterprise_to_build']
+        cloud_config = setup_output['backend_config']
 
-        json_output['backend_config'] = cloud_config
-        json_output['enterprise_to_build'] = enterprise
         print("Setting up nodes.")
 
         setup_enterprise(cloud_config,enterprise,enterprise_built)
         print("Setting up nodes, completed.")
 
         json_output['enterprise_built'] = enterprise_built
-        json_output["end_time"] = str(datetime.now())
+        json_output["setup-end_time"] = str(datetime.now())
 
         print("Enterprise built.  Writing output to setup-output.json.")
+
     except:
         traceback.print_exc()
         print("Exception occured while setting up enterprise.  Dumping results to setup-output.json anyhow.")
 
-    with open("setup-output.json", "w") as f:
+    with open("post-install-output.json", "w") as f:
         json.dump(json_output,f)
 
     return
