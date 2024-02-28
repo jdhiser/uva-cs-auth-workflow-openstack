@@ -120,8 +120,8 @@ def deploy_domain_controllers(cloud_config,enterprise,enterprise_built):
 
 def main():
 
-    if len(sys.argv) != 3:
-        print("Usage:  python " + sys.argv[0] + " cloud_config.json enterprise.json")
+    if len(sys.argv) != 2:
+        print("Usage:  python " + sys.argv[0] + " setup-output.json")
         sys.exit(1)
 
     json_output = {}
