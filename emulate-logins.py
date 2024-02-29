@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 
+import traceback
 import time, sys, os, json
 from shell_handler import ShellHandler
 from datetime import datetime, timezone, timedelta
@@ -51,6 +52,14 @@ def emulate_login(login, user_data, built):
 
     mac=fake.mac_address() 
     dev='v'+mac.replace(':','')
+    cmd="not available yet"
+    stdout=""
+    stderr=""
+    stdout2=""
+    stderr2=""
+    exit_status=-1
+    exit_status2=-1
+    shell=None
 
     try:
         print(f"At {datetime.now()}, connecting from ip {from_ip_str} with mac {mac} to ip = {targ_ip}, user = {username}@{domain}, password = {password}")
@@ -107,11 +116,24 @@ def emulate_login(login, user_data, built):
     except KeyboardInterrupt:
         print(f"At {datetime.now()}, Aborting due to Keyboard request connection from ip {from_ip_str} with mac {mac} to ip = {targ_ip}, user = {username}@{domain}, password = {password}")
         raise
-    except:
-        print(f"At {datetime.now()}, Failed connect from ip {from_ip_str} with mac {mac} to ip = {targ_ip}, user = {username}@{domain}, password = {password}")
+    except Exception as e:
+        print("");
+        print(f"FAILED CONNECTION: At {datetime.now()}, Failed connect to user = {username}@{domain}@{targ_ip}, password = {password}")
+        print(f"{e}")
+        traceback.print_exception(e)
+        pass
 
 
     login_results.append({ "cmd": cmd, "stdout": [stdout, stdout2], "stderr": [stderr,stderr2], "login": login, "exit_status": [ exit_status, exit_status2 ]  })
+    # explicitly clean up the shell so we don't somehow save anything from it
+    stdout=""
+    stderr=""
+    stdout2=""
+    stderr2=""
+    exit_status=-1
+    exit_status2=-1
+    shell=None
+    
     return
 
 def load_json_file(name: str):

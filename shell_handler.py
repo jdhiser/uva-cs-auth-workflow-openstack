@@ -15,7 +15,7 @@ class ShellHandler:
 
         self.ssh = paramiko.SSHClient()
         self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        self.ssh.connect(host, username=user, password=password, port=22, sock=self.sock)
+        self.ssh.connect(host, username=user, password=password, port=22, sock=self.sock, timeout=10)
         self.sftp = self.ssh.open_sftp()
 
 
@@ -25,7 +25,8 @@ class ShellHandler:
 
     def __del__(self):
 
-        self.ssh.close()
+        if hasattr(self, "ssh"):
+            self.ssh.close()
         #self.channel.close()
         if not self.sock == None:
             self.sock.close()
