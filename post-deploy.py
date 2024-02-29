@@ -7,7 +7,6 @@ import json
 import role_register
 import role_domains
 from datetime import datetime
-from openstack_cloud import OpenstackCloud
 from joblib import Parallel, delayed
 
 
@@ -23,8 +22,10 @@ def load_json(filename):
 def extract_creds(enterprise_built,name):
     details = next(filter( lambda x: name == x['name'], enterprise_built['deployed']['nodes']))
     addresses = details['addresses']
-    ipv4_addr = addresses[0]['addr']
-    print("  ipv4 addr: " + str(ipv4_addr))
+    control_ipv4_addr = addresses[0]['addr']
+    game_ipv4_addr = addresses[1]['addr']
+    print("  ipv4 addr (control): " + str(control_ipv4_addr))
+    print("  ipv4 addr (game): " + str(game_ipv4_addr))
 
     if 'password' in details:
         password = details['password']
@@ -32,7 +33,7 @@ def extract_creds(enterprise_built,name):
     else:
         password = None
         print("  password: No password set")
-    return ipv4_addr,password
+    return control_ipv4_addr,game_ipv4_addr,password
 
 def register_windows(cloud_config,enterprise,enterprise_built):
     ret={}
@@ -41,8 +42,8 @@ def register_windows(cloud_config,enterprise,enterprise_built):
     for node in windows_nodes:
         name = node['name']
         print("  Registering windows on " + name)
-        ipv4_addr,password = extract_creds(enterprise_built,name)
-        access_list.append({"name": name, "addr": ipv4_addr, "password": str(password)})
+        control_ipv4_addr,game_ipv4_addr,password = extract_creds(enterprise_built,name)
+        access_list.append({"name": name, "control_addr": control_ipv4_addr, "game_addr": game_ipv4_addr, "password": str(password)})
 
     # sequential
     #results = []
@@ -67,8 +68,8 @@ def join_domains(cloud_config,enterprise,enterprise_built):
             print("No domain (" + str(domain) + ") to join for " + name)
             continue
         print("Joining domain on " + name)
-        ipv4_addr,password = extract_creds(enterprise_built,name)
-        access_list.append({"cloud_config": cloud_config, "node": node, "domain_leader": leader_details[domain], "addr": ipv4_addr, "password": str(password), 'domain': domain })
+        control_ipv4_addr,game_ipv4_addr,password = extract_creds(enterprise_built,name)
+        access_list.append({"cloud_config": cloud_config, "node": node, "domain_leader": leader_details[domain], "control_addr": control_ipv4_addr, "game_addr": game_ipv4_addr, "password": str(password), 'domain': domain })
 
     # sequential
     #results = []
@@ -76,7 +77,7 @@ def join_domains(cloud_config,enterprise,enterprise_built):
     #    results.append(role_domains.join_domain(access))
 
     # parallel
-    results = Parallel(n_jobs=10)(delayed(role_domains.join_domain)(access) for access in access_list)
+    results = Parallel(n_jobs=1)(delayed(role_domains.join_domain)(access) for access in access_list)
 
     ret['join_domains']=results
         
@@ -98,11 +99,11 @@ def deploy_domain_controllers(cloud_config,enterprise,enterprise_built):
         name = leader['name']
         domain = leader['domain']
         print("Setting up domain controller with new forest on " + name + " for domain " + domain)
-        ipv4_addr,password = extract_creds( enterprise_built,name)
+        control_ipv4_addr,game_ipv4_addr,password = extract_creds( enterprise_built,name)
         #access_list.append({"name": name})
         #access_list.append({"name": name, "addr": ipv4_addr})
-        results=role_domains.deploy_forest(cloud_config,name,ipv4_addr,password, domain)
-        leader_details[domain]={"name": str(name), "addr": [ipv4_addr], "admin_pass": str(password)}
+        results=role_domains.deploy_forest(cloud_config,name,control_ipv4_addr,game_ipv4_addr,password, domain)
+        leader_details[domain]={"name": str(name), "control_addr": [control_ipv4_addr], "game_addr": [game_ipv4_addr], "admin_pass": str(password)}
         ret["forest_setup_"+name]=results
 
     followers = list(filter(lambda x: 'domain_controller' in x['roles'], enterprise['nodes']))
@@ -110,9 +111,10 @@ def deploy_domain_controllers(cloud_config,enterprise,enterprise_built):
         domain = follower['domain']
         name = follower['name']
         print("Setting up domain controller on " + name + ' for domain ' + domain)
-        ipv4_addr,password = extract_creds( enterprise_built,name)
-        results=role_domains.add_domain_controller(cloud_config,leader_details[domain], name,ipv4_addr,password, domain)
-        leader_details[domain]['addr'].append(ipv4_addr)
+        control_ipv4_addr,game_ipv4_addr,password = extract_creds( enterprise_built,name)
+        results=role_domains.add_domain_controller(cloud_config,leader_details[domain], name,control_ipv4_addr,game_ipv4_addr,password, domain)
+        leader_details[domain]['control_addraddr'].append(control_ipv4_addr)
+        leader_details[domain]['game_addraddr'].append(game_ipv4_addr)
         ret["additional_dc_setup_"+name]=results
         
     ret["domain_leaders"] = leader_details    
@@ -148,7 +150,7 @@ def main():
         traceback.print_exc()
         print("Exception occured while setting up enterprise.  Dumping results to setup-output.json anyhow.")
 
-    with open("post-install-output.json", "w") as f:
+    with open("post-deploy-output.json", "w") as f:
         json.dump(json_output,f)
 
     return

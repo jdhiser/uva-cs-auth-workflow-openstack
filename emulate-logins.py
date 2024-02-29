@@ -52,58 +52,64 @@ def emulate_login(login, user_data, built):
     mac=fake.mac_address() 
     dev='v'+mac.replace(':','')
 
-    print(f"At {datetime.now()}, connecting from ip {from_ip_str} with mac {mac}")
-    print(f"To ip = {targ_ip}, user = {username}@{domain}, password = {password}")
+    try:
+        print(f"At {datetime.now()}, connecting from ip {from_ip_str} with mac {mac} to ip = {targ_ip}, user = {username}@{domain}, password = {password}")
 
-    add_command = ( 
-            'sudo modprobe dummy ; ' 
-            'sudo ip link add ' + dev +' type dummy ; ' 
-            'sudo ifconfig ' + dev + ' hw ether ' + mac + ' ; '
-            'sudo ip addr add ' + from_ip_str+'/32' + ' dev ' + dev + ' ; '
-            'sudo ip link set dev ' + dev + ' up'
-            )
+        add_command = ( 
+                'sudo modprobe dummy ; ' 
+                'sudo ip link add ' + dev +' type dummy ; ' 
+                'sudo ifconfig ' + dev + ' hw ether ' + mac + ' ; '
+                'sudo ip addr add ' + from_ip_str+'/32' + ' dev ' + dev + ' ; '
+                'sudo ip link set dev ' + dev + ' up'
+                )
 
-    # print("add-dummy-nic cmd: " + add_command)
-    os.system(add_command)
+        # print("add-dummy-nic cmd: " + add_command)
+        os.system(add_command)
 
-    #        'sudo ip addr del ' + from_ip_str+'/32' + ' dev ' + dev + ' ; ' 
-    del_command = (
-            'sudo ip link delete ' + dev + ' type dummy'
-            )
+        #        'sudo ip addr del ' + from_ip_str+'/32' + ' dev ' + dev + ' ; ' 
+        del_command = (
+                'sudo ip link delete ' + dev + ' type dummy'
+                )
 
-    #sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-
-    shell = ShellHandler(targ_ip,fq_username,password=password, from_ip=from_ip_str)
-
-    #sock.bind((from_ip_str, 0))           # set source address
-    #sock.connect((targ_ip, 22))       # connect to the destination address
-
-    #client = paramiko.SSHClient()
-    #client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    print(f"Logging in to {targ_ip} as {fq_username} with password {password}.")
-    #client.connect(targ_ip,
-    #               username=fq_username,
-    #               password=password,
-    #               sock=sock)
-
-    #channel = client.invoke_shell()
+        #sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
 
-    #cmd=(
-    #        f'python -c "import time; import getpass; duration={str(duration)}; '
-    #        'print(f\'{getpass.getuser()} sleeping for {duration} seconds \'); time.sleep(duration)"'
-    #        )
-    cmd='echo ' + json.dumps(login) + " > action.json  "
-    # print("Executing cmd on " + targ_ip + ": " + cmd)
-    stdout,stderr, exit_status = shell.execute_cmd(cmd, verbose=False)
+        shell = ShellHandler(targ_ip,fq_username,password=password, from_ip=from_ip_str)
 
-    pscmd ='python -c "import json;  print(json.dumps(json.load(open(\'action.json\',\'r\'))))"'
+        #sock.bind((from_ip_str, 0))           # set source address
+        #sock.connect((targ_ip, 22))       # connect to the destination address
 
-    stdout2,stderr2, exit_status2 = shell.execute_powershell(pscmd, verbose=False)
+        #client = paramiko.SSHClient()
+        #client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        print(f"Logging in to {targ_ip} as {fq_username} with password {password}.")
+        #client.connect(targ_ip,
+        #               username=fq_username,
+        #               password=password,
+        #               sock=sock)
+
+        #channel = client.invoke_shell()
 
 
-    os.system(del_command)
+        #cmd=(
+        #        f'python -c "import time; import getpass; duration={str(duration)}; '
+        #        'print(f\'{getpass.getuser()} sleeping for {duration} seconds \'); time.sleep(duration)"'
+        #        )
+        cmd='echo ' + json.dumps(login) + " > action.json  "
+        # print("Executing cmd on " + targ_ip + ": " + cmd)
+        stdout,stderr, exit_status = shell.execute_cmd(cmd, verbose=False)
+
+        pscmd ='python -c "import json;  print(json.dumps(json.load(open(\'action.json\',\'r\'))))"'
+
+        stdout2,stderr2, exit_status2 = shell.execute_powershell(pscmd, verbose=False)
+
+
+        os.system(del_command)
+    except KeyboardInterrupt:
+        print(f"At {datetime.now()}, Aborting due to Keyboard request connection from ip {from_ip_str} with mac {mac} to ip = {targ_ip}, user = {username}@{domain}, password = {password}")
+        raise
+    except:
+        print(f"At {datetime.now()}, Failed connect from ip {from_ip_str} with mac {mac} to ip = {targ_ip}, user = {username}@{domain}, password = {password}")
+
 
     login_results.append({ "cmd": cmd, "stdout": [stdout, stdout2], "stderr": [stderr,stderr2], "login": login, "exit_status": [ exit_status, exit_status2 ]  })
     return

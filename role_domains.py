@@ -6,9 +6,9 @@ from password import generate_password
 
 
 domain_safe_mode_password = generate_password(12)
-verbose = False
+verbose = True
 
-def deploy_forest(cloud_config,name,ipv4_addr,password,domain):
+def deploy_forest(cloud_config,name,control_ipv4_addr, game_ipv4_addr,password,domain):
 
     user='Administrator'
     domain_name = domain + '.' + cloud_config['enterprise_url'] 
@@ -32,7 +32,7 @@ def deploy_forest(cloud_config,name,ipv4_addr,password,domain):
     if verbose:
         print("  Register forest command:" + cmd)
 
-    shell = ShellHandler(ipv4_addr,user,password)
+    shell = ShellHandler(control_ipv4_addr,user,password)
     stdout,stderr,exit_status = shell.execute_powershell(cmd, verbose=verbose)
     try:
         shell.execute_powershell('Restart-computer -force', verbose=verbose)
@@ -46,7 +46,7 @@ def deploy_forest(cloud_config,name,ipv4_addr,password,domain):
     while not status_received and attempts < 60:
         try:
             attempts += 1
-            shell = ShellHandler(ipv4_addr,user,password)
+            shell = ShellHandler(control_ipv4_addr,user,password)
             stdout2,stderr2,exit_status2 = shell.execute_powershell("get-addomain", verbose=verbose)
             if 'Attempting to perform the' in str(stdout2): 
                 # server is starting up, try again.
@@ -70,19 +70,21 @@ def deploy_forest(cloud_config,name,ipv4_addr,password,domain):
     # wait for domain controller to be up/ready.
 
     return {
-                "deploy_forest_results": {"name": name, "addr":ipv4_addr, "password": password, "domain": domain }, 
+            "deploy_forest_results": {"name": name, "control_addr":control_ipv4_addr, "game_addr": game_ipv4_addr, "password": password, "domain": domain }, 
                 "install_forest": {"stdout": stdout, "stderr": stderr, "exit_status": exit_status},
                 "verify_forest": {"stdout": stdout2, "stderr": stderr2, "exit_status": exit_status2},
                 "domain_safe_mode_password": domain_safe_mode_password
             }
 
 
-def add_domain_controller(cloud_config,leader_details,name,ipv4_addr,password,domain):
+def add_domain_controller(cloud_config,leader_details,name,control_ipv4_addr, game_ipv4_addr,password,domain):
     user='Administrator'
     domain_name = domain + '.' + cloud_config['enterprise_url'] 
     leader_admin_password=leader_details['admin_pass']
-    leader_ip=leader_details['addr'][0]
-    print('  domain-controller leader: ' + leader_ip)
+    game_leader_ip=leader_details['game_addr'][0]
+    control_leader_ip=leader_details['control_addr'][0]
+    print('  domain-controller leader (control): ' + control_leader_ip)
+    print('  domain-controller leader: (game)' + game_leader_ip)
     print('  domain-controller password: ' + leader_admin_password)
 
     pycmd=(
@@ -104,19 +106,19 @@ def add_domain_controller(cloud_config,leader_details,name,ipv4_addr,password,do
         "$oldpath = (Get-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager\Environment' -Name PATH).path; "
         "$newpath = \"$oldpath;C:\python\" ; "
         "Set-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager\Environment' -Name PATH -Value $newpath "
-        ).format( leader_ip, leader_admin_password, domain_name, domain_safe_mode_password,domain_name)
+        ).format( game_leader_ip, leader_admin_password, domain_name, domain_safe_mode_password,domain_name)
 
     if verbose:
         print("  Register as domain comtroller command:" + adcmd)
 
-    shell = ShellHandler(ipv4_addr,user,password)
+    shell = ShellHandler(control_ipv4_addr,user,password)
     stdout2,stderr2,exit_status2 = shell.execute_powershell(pycmd,verbose=verbose)
     stdout = [stdout2]
     stderr = [stderr2]
     exit_status = [exit_status2]
     attempts = 0 
     while attempts < 10:
-        shell = ShellHandler(ipv4_addr,user,password)
+        shell = ShellHandler(control_ipv4_addr,user,password)
         attempts += 1 
 #        if name == 'dc3':
 #            print('adcmd='+ str(adcmd))
@@ -139,7 +141,7 @@ def add_domain_controller(cloud_config,leader_details,name,ipv4_addr,password,do
         raise RuntimeError("Could not join domain on machine " + name)
 
     try:
-        shell = ShellHandler(ipv4_addr,user,password)
+        shell = ShellHandler(control_ipv4_addr,user,password)
         shell.execute_powershell('Restart-computer -force', verbose=verbose)
     # we expect a forced reboot  to end in a socket error because the socket will
     # forceably disconnect as the machine reboots.
@@ -153,7 +155,7 @@ def add_domain_controller(cloud_config,leader_details,name,ipv4_addr,password,do
     while not status_received and attempts < 60:
         try:
             attempts += 1
-            shell = ShellHandler(ipv4_addr,user,leader_admin_password)
+            shell = ShellHandler(control_ipv4_addr,user,leader_admin_password)
             stdout2,stderr2,exit_status2 = shell.execute_powershell("get-addomain", verbose=verbose)
             status_received=True
             stdout.append(stdout2)
@@ -181,7 +183,7 @@ def add_domain_controller(cloud_config,leader_details,name,ipv4_addr,password,do
     print("  Reboot Complete");
 
     return {
-                "add_domain_results": {"name": name, "addr":ipv4_addr, "password": password, "domain": domain }, 
+            "add_domain_results": {"name": name, "control_addr": control_ipv4_addr, "game_addr": game_ipv4_addr, "password": password, "domain": domain }, 
                 "install_domain_controller": {"stdout": stdout, "stderr": stderr, "exit_status": exit_status},
                 "verify_domain_controller": {"stdout": stdout2, "stderr": stderr2, "exit_status": exit_status2}
             }
@@ -196,33 +198,34 @@ def join_domain(obj):
     fqdn_domain_name = domain_name + '.' + enterprise_name; 
     leader=obj['domain_leader']
     leader_admin_password=leader['admin_pass']
-    leader_addrs=leader['addr']
-    ipv4_addr=obj['addr']
+    game_leader_addrs=leader['game_addr']
+    control_ipv4_addr=obj['control_addr']
+    game_ipv4_addr=obj['game_addr']
     password=obj['password']
     roles=node['roles']
     iswindows = len(list(filter(lambda role: 'windows' == role, roles))) == 1
     islinux = len(list(filter(lambda role: 'linux' == role, roles))) == 1
 
     # convert array into string for powershell.
-    domain_ips = str(leader_addrs).replace("[","").replace(']','').replace("'",'"')
+    domain_ips = str(game_leader_addrs).replace("[","").replace(']','').replace("'",'"')
 
 
     if verbose:
         print("  Domain controller leader:" + leader['name'])
-        print("  Domain controller IPs:" + str(leader_addrs))
+        print("  Domain controller IPs (game):" + str(game_leader_addrs))
 
     if iswindows:
         print("Windows join-domain for node " + name)
-        return join_domain_windows(name, leader_admin_password, ipv4_addr, domain_ips, fqdn_domain_name, domain_name, password)
+        return join_domain_windows(name, leader_admin_password, control_ipv4_addr, game_ipv4_addr, domain_ips, fqdn_domain_name, domain_name, password)
     elif islinux:
         print("Linux join-domain for node " + name)
-        return join_domain_linux(name, leader_admin_password, ipv4_addr, domain_ips, fqdn_domain_name, domain_name, password, enterprise_name)
+        return join_domain_linux(name, leader_admin_password, control_ipv4_addr, game_ipv4_addr, domain_ips, fqdn_domain_name, domain_name, password, enterprise_name)
     else:
         errstr = "  No endpoint/domain enrollment for node " + name
         raise RuntimeError(errstr)
 
 
-def join_domain_windows(name, leader_admin_password, ipv4_addr, domain_ips, fqdn_domain_name, domain_name, password):
+def join_domain_windows(name, leader_admin_password, control_ipv4_addr, game_ipv4_addr, domain_ips, fqdn_domain_name, domain_name, password):
 
     print("Windows join-domain for node " + name)
 
@@ -245,11 +248,11 @@ def join_domain_windows(name, leader_admin_password, ipv4_addr, domain_ips, fqdn
 
     print("  Joining an exsiting domain: " + domain_name)
 
-    shell = ShellHandler(ipv4_addr,user,password)
+    shell = ShellHandler(control_ipv4_addr,user,password)
     stdout,stderr,exit_status = shell.execute_powershell(cmd,verbose=verbose)
 
     try:
-        shell = ShellHandler(ipv4_addr,user,password)
+        shell = ShellHandler(control_ipv4_addr,user,password)
         shell.execute_powershell('Restart-computer -force', verbose=verbose)
     except socket.error:
         pass
@@ -261,7 +264,7 @@ def join_domain_windows(name, leader_admin_password, ipv4_addr, domain_ips, fqdn
     while not status_received and attempts < 60:
         try:
             attempts += 1
-            shell = ShellHandler(ipv4_addr,domain_name+'\\'+user,leader_admin_password)
+            shell = ShellHandler(control_ipv4_addr,domain_name+'\\'+user,leader_admin_password)
             stdout2,stderr2,exit_status2 = shell.execute_powershell('echo "the domain is $env:userdomain" ', verbose=verbose)
             status_received=True
         except paramiko.ssh_exception.SSHException:
@@ -284,7 +287,7 @@ def join_domain_windows(name, leader_admin_password, ipv4_addr, domain_ips, fqdn
                 "verify_join_domain": {"stdout": stdout2, "stderr": stderr2, "exit_status": exit_status2}
             }
 
-def join_domain_linux(name, leader_admin_password, ipv4_addr, domain_ips, fqdn_domain_name, domain_name, password, enterprise_name):
+def join_domain_linux(name, leader_admin_password, control_ipv4_addr, game_ipv4_addr, domain_ips, fqdn_domain_name, domain_name, password, enterprise_name):
     netplan_config_path='/etc/netplan/50-cloud-init.yaml'
     chrony_config_path='/etc/chrony/chrony.conf'
     domain_ips_formated = str(domain_ips).replace('[','').replace(']','').replace('"','')
@@ -321,7 +324,7 @@ def join_domain_linux(name, leader_admin_password, ipv4_addr, domain_ips, fqdn_d
     cmds= set_allow_password + ';' + set_dns_command + ';' + install_packages_cmd + ';' + set_chrony_command + ';' + krb5_cmd + ';' + realm_cmd 
 
 
-    shell = ShellHandler(ipv4_addr,'ubuntu',None)
+    shell = ShellHandler(control_ipv4_addr,'ubuntu',None)
     stdout,stderr,exit_status = shell.execute_cmd(cmds, verbose=verbose)
 
     shell.execute_cmd("sudo reboot now" , verbose=verbose)
@@ -331,12 +334,14 @@ def join_domain_linux(name, leader_admin_password, ipv4_addr, domain_ips, fqdn_d
     status_received = False
     attempts = 0
     stdout2 = None
-    while not status_received and attempts < 60:
+    stderr2 = None
+    exit_status2 = None
+    while not status_received and attempts < 300:
         attempts += 1
         try:
             admin_user='administrator@' + fqdn_domain_name
             print("  Trying to verify reboot ... creds= {}:{}".format(admin_user,leader_admin_password))
-            shell = ShellHandler(ipv4_addr, admin_user, leader_admin_password)
+            shell = ShellHandler(control_ipv4_addr, admin_user, leader_admin_password)
             stdout2,stderr2,exit_status2 = shell.execute_cmd('realm list', verbose=verbose)
             status_received=True
         except paramiko.ssh_exception.SSHException:
@@ -394,11 +399,12 @@ def deploy_users(users,built):
     deploy_users['add_users']={}
 
     for domain in domain_commands:
-        print("Installing users for domain " + domain)
         cmd=domain_commands[domain]
         controller_name = domain_leaders[domain]['name']
-        controller_addr = domain_leaders[domain]['addr'][0]
+        print(domain_leaders[domain] )
+        controller_addr = domain_leaders[domain]['control_addr'][0]     # uses control address
         domain_password = domain_leaders[domain]['admin_pass']
+        print("Installing users for domain " + domain + " on server " + controller_addr)
         print("  controller name,addr:" + controller_name + "(" + controller_addr + ")")
         qualified_username='administrator@'+domain
         shell = ShellHandler(controller_addr,qualified_username,domain_password)

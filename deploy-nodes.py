@@ -4,11 +4,8 @@
 import traceback
 import sys
 import json
-import role_register
-import role_domains
 from datetime import datetime
 from openstack_cloud import OpenstackCloud
-from joblib import Parallel, delayed
 
 
 
@@ -58,6 +55,7 @@ def main():
 
         json_output['backend_config'] = cloud_config
         json_output['enterprise_to_build'] = enterprise
+        json_output['enterprise_built'] = enterprise_built
 
         json_output["deploy_end_time"] = str(datetime.now())
 
