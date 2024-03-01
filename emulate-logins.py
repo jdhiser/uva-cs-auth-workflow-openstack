@@ -22,7 +22,7 @@ scheduler = BackgroundScheduler()
 
 # functions
 
-def emulate_login(login, user_data, built):
+def emulate_login(number, login, user_data, built):
 
 
     # print(f"At {datetime.now()}, emulating login: " +  json.dumps(login))
@@ -62,25 +62,29 @@ def emulate_login(login, user_data, built):
     shell=None
 
     try:
-        print(f"At {datetime.now()}, connecting from ip {from_ip_str} with mac {mac} to ip = {targ_ip}, user = {username}@{domain}, password = {password}")
+        print(f"At {datetime.now()}, #{number} from ip {from_ip_str} with mac {mac} to ip = {targ_ip}, user = {username}@{domain}, password = {password}")
 
-        add_command = ( 
-                'sudo modprobe dummy ; ' 
-                'sudo ip link add ' + dev +' type dummy ; ' 
-                'sudo ifconfig ' + dev + ' hw ether ' + mac + ' ; '
-                'sudo ip addr add ' + from_ip_str+'/32' + ' dev ' + dev + ' ; '
-                'sudo ip link set dev ' + dev + ' up'
-                )
+        if False:
+            add_command = ( 
+                    'sudo modprobe dummy ; ' 
+                    'sudo ip link add ' + dev +' type dummy ; ' 
+                    'sudo ifconfig ' + dev + ' hw ether ' + mac + ' ; '
+                    'sudo ip addr add ' + from_ip_str+'/32' + ' dev ' + dev + ' ; '
+                    'sudo ip link set dev ' + dev + ' up'
+                    )
 
-        # print("add-dummy-nic cmd: " + add_command)
-        os.system(add_command)
+            # print("add-dummy-nic cmd: " + add_command)
+            os.system(add_command)
 
-        #        'sudo ip addr del ' + from_ip_str+'/32' + ' dev ' + dev + ' ; ' 
-        del_command = (
-                'sudo ip link delete ' + dev + ' type dummy'
-                )
+            #        'sudo ip addr del ' + from_ip_str+'/32' + ' dev ' + dev + ' ; ' 
+            del_command = (
+                    'sudo ip link delete ' + dev + ' type dummy'
+                    )
 
-        #sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            #sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        else:
+            from_ip_str=None
+            del_command = None
 
 
         shell = ShellHandler(targ_ip,fq_username,password=password, from_ip=from_ip_str)
@@ -90,7 +94,7 @@ def emulate_login(login, user_data, built):
 
         #client = paramiko.SSHClient()
         #client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        print(f"Logging in to {targ_ip} as {fq_username} with password {password}.")
+        #print(f"Logging in to {targ_ip} as {fq_username} with password {password}.")
         #client.connect(targ_ip,
         #               username=fq_username,
         #               password=password,
@@ -112,7 +116,8 @@ def emulate_login(login, user_data, built):
         stdout2,stderr2, exit_status2 = shell.execute_powershell(pscmd, verbose=False)
 
 
-        os.system(del_command)
+        if not del_command is None:
+            os.system(del_command)
     except KeyboardInterrupt:
         print(f"At {datetime.now()}, Aborting due to Keyboard request connection from ip {from_ip_str} with mac {mac} to ip = {targ_ip}, user = {username}@{domain}, password = {password}")
         raise
@@ -135,6 +140,8 @@ def emulate_login(login, user_data, built):
     shell=None
     
     return
+
+connection_number = 0
 
 def load_json_file(name: str):
     with open(name) as f:
@@ -163,7 +170,9 @@ def schedule_logins(logins_file, setup_output_file, fast_debug = False):
     scheduler = BackgroundScheduler(executors=executors)
 
 
+    number = 0
     for login in flat_logins:
+        number += 1
         if fast_debug: 
             nowish +=  timedelta(seconds=3)
             login['login_start'] = str(nowish)
@@ -171,7 +180,8 @@ def schedule_logins(logins_file, setup_output_file, fast_debug = False):
 
         job_start = login['login_start']
         job_start = datetime.strptime(job_start, '%Y-%m-%d %H:%M:%S.%f')
-        scheduler.add_job( emulate_login, 'date', run_date=job_start, kwargs={'login': login, 'user_data': users, 'built': setup_output_file['enterprise_built']})
+        scheduler.add_job( emulate_login, 'date', run_date=job_start, kwargs={'number': number, 'login': login, 'user_data': users, 'built': setup_output_file['enterprise_built']})
+#        emulate_login(number= number, login= login, user_data= users, built= setup_output_file['enterprise_built'])
         
 
     return scheduler

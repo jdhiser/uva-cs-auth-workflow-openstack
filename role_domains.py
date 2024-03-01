@@ -283,8 +283,8 @@ def join_domain_windows(name, leader_admin_password, control_ipv4_addr, game_ipv
         raise RuntimeError(errstr)
 
     return {
-                "join_domain": {"stdout": stdout, "stderr": stderr, "exit_status": exit_status},
-                "verify_join_domain": {"stdout": stdout2, "stderr": stderr2, "exit_status": exit_status2}
+            "join_domain": {"join-cmd": cmd, "stdout": stdout, "stderr": stderr, "exit_status": exit_status},
+            "verify_join_domain": {"stdout": stdout2, "stderr": stderr2, "exit_status": exit_status2}
             }
 
 def join_domain_linux(name, leader_admin_password, control_ipv4_addr, game_ipv4_addr, domain_ips, fqdn_domain_name, domain_name, password, enterprise_name):
@@ -373,8 +373,8 @@ def join_domain_linux(name, leader_admin_password, control_ipv4_addr, game_ipv4_
     print("  Reboot Completed by verifying computer is in the domain");
 
     return {
-                "join_domain": {"stdout": stdout, "stderr": stderr, "exit_status": exit_status},
-                "verify_join_domain": {"stdout": stdout2, "stderr": stderr2, "exit_status": exit_status2}
+            "join_domain": {"join-cmd": cmds, "stdout": stdout, "stderr": stderr, "exit_status": exit_status},
+            "verify_join_domain": {"stdout": stdout2, "stderr": stderr2, "exit_status": exit_status2}
             }
 
 def deploy_users(users,built):
