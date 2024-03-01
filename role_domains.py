@@ -69,10 +69,26 @@ def deploy_forest(cloud_config,name,control_ipv4_addr, game_ipv4_addr,password,d
     print("  Reboot Complete.  Waiting for domain controller service to start.");
     # wait for domain controller to be up/ready.
 
+
+    remove_control_network_from_dns_cmd = (
+            "set-dnsclient -interfacealias 'Ethernet Instance 0 2' -registerthisconnectionsaddress 0 ; "
+            " $srv=$(get-dnsserversetting -all) ;"
+            " $srv.ListeningIPAddress=@( $srv.ListeningIPAddress[1]) ;"
+            " set-dnsserversetting -inputobject $srv; "
+            " ipconfig /flushdns  ; "
+            " ipconfig /registerdns  ; "
+            " dcdiag /fix ; "
+            " nslookup dc1.castle.mtx1.os"
+            )
+    shell = ShellHandler(control_ipv4_addr,user,password)
+    stdout3,stderr3,exit_status3 = shell.execute_powershell(remove_control_network_from_dns_cmd,verbose=verbose)
+
+
     return {
             "deploy_forest_results": {"name": name, "control_addr":control_ipv4_addr, "game_addr": game_ipv4_addr, "password": password, "domain": domain }, 
                 "install_forest": {"stdout": stdout, "stderr": stderr, "exit_status": exit_status},
                 "verify_forest": {"stdout": stdout2, "stderr": stderr2, "exit_status": exit_status2},
+                "cleanup_control_from_dns": {"stdout": stdout3, "stderr": stderr3, "exit_status": exit_status3},
                 "domain_safe_mode_password": domain_safe_mode_password
             }
 
