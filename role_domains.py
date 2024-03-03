@@ -310,11 +310,11 @@ def join_domain_linux(name, leader_admin_password, control_ipv4_addr, game_ipv4_
     krdb_config_path='/etc/krb5.conf'
 
 
-    set_allow_password="sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/'  /etc/ssh/sshd_config"
+    set_allow_password="set -x ; ip a ; ping -c 3 google.com; ping -c 3 nova.clouds.archive.ubuntu.com ; sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/'  /etc/ssh/sshd_config"
     set_dns_command=(
         "sudo sed -i '/dhcp4: true/a \            nameservers:\\n                addresses: \[ {} \]' {} ;  "
-        "sudo netplan apply "
-        ).format(domain_ips_formated, netplan_config_path)
+        "cat {}; sudo netplan apply "
+        ).format(domain_ips_formated, netplan_config_path, netplan_config_path)
 
     install_packages_cmd="sudo apt update && sudo env DEBIAN_FRONTEND=noninteractive apt install -y python-is-python3 chrony krb5-user realmd sssd sssd-tools adcli samba-common-bin"
 
@@ -362,11 +362,11 @@ def join_domain_linux(name, leader_admin_password, control_ipv4_addr, game_ipv4_
             status_received=True
         except paramiko.ssh_exception.SSHException:
             print("  Waiting for reboot (Expect socket closed by peer messages).")
-            time.sleep(1)
+            time.sleep(2)
             pass
         except paramiko.ssh_exception.NoValidConnectionsError:
             print("  Waiting for reboot (Expect socket closed by peer messages).")
-            time.sleep(1)
+            time.sleep(2)
             pass
 
     try: stdout2
