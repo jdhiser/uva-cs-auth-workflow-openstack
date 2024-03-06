@@ -77,7 +77,7 @@ def join_domains(cloud_config,enterprise,enterprise_built):
     #    results.append(role_domains.join_domain(access))
 
     # parallel
-    results = Parallel(n_jobs=1)(delayed(role_domains.join_domain)(access) for access in access_list)
+    results = Parallel(n_jobs=10)(delayed(role_domains.join_domain)(access) for access in access_list)
 
     ret['join_domains']=results
         

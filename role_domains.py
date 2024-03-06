@@ -313,10 +313,10 @@ def join_domain_linux(name, leader_admin_password, control_ipv4_addr, game_ipv4_
     set_allow_password="set -x ; ip a ; ping -c 3 google.com; ping -c 3 nova.clouds.archive.ubuntu.com ; sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/'  /etc/ssh/sshd_config"
     set_dns_command=(
         "sudo sed -i '/dhcp4: true/a \            nameservers:\\n                addresses: \[ {} \]' {} ;  "
-        "cat {}; sudo netplan apply "
+        "cat {}; sudo netplan apply ; echo Hostname=$(hostname); sudo resolvectl status  "
         ).format(domain_ips_formated, netplan_config_path, netplan_config_path)
 
-    install_packages_cmd="sudo apt update && sudo env DEBIAN_FRONTEND=noninteractive apt install -y python-is-python3 chrony krb5-user realmd sssd sssd-tools adcli samba-common-bin"
+    install_packages_cmd="sudo apt update && sudo env DEBIAN_FRONTEND=noninteractive apt install -y dnsutils iputils-ping traceroute telnet tcpdump python-is-python3 chrony krb5-user realmd sssd sssd-tools adcli samba-common-bin"
 
     set_chrony_command=(
         "sudo sed -i '/pool ntp.ubuntu.com        iburst maxsources 4/i pool {}        iburst maxsources 5' {} ; "
