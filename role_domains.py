@@ -114,6 +114,7 @@ def add_domain_controller(cloud_config,leader_details,name,control_ipv4_addr, ga
         "Install-windowsfeature AD-domain-services ; "
         "Import-Module ADDSDeployment ;  "
         "Set-DnsClientServerAddress -serveraddress ('{}') -interfacealias 'Ethernet Instance 0' ; "
+        "Set-DnsClientServerAddress -serveraddress ('{}') -interfacealias 'Ethernet Instance 0 2' ; "
         "$passwd = convertto-securestring -AsPlainText -Force -String '{}' ; "
         "$cred = new-object -typename System.Management.Automation.PSCredential -argumentlist '{}\\administrator',$passwd ; "
         "$secure=ConvertTo-SecureString -asplaintext -string '{}' -force ; "
@@ -122,7 +123,7 @@ def add_domain_controller(cloud_config,leader_details,name,control_ipv4_addr, ga
         "$oldpath = (Get-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager\Environment' -Name PATH).path; "
         "$newpath = \"$oldpath;C:\python\" ; "
         "Set-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager\Environment' -Name PATH -Value $newpath "
-        ).format( game_leader_ip, leader_admin_password, domain_name, domain_safe_mode_password,domain_name)
+        ).format( game_leader_ip, game_leader_ip, leader_admin_password, domain_name, domain_safe_mode_password,domain_name)
 
     if verbose:
         print("  Register as domain comtroller command:" + adcmd)

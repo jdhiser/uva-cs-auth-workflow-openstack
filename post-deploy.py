@@ -113,8 +113,8 @@ def deploy_domain_controllers(cloud_config,enterprise,enterprise_built):
         print("Setting up domain controller on " + name + ' for domain ' + domain)
         control_ipv4_addr,game_ipv4_addr,password = extract_creds( enterprise_built,name)
         results=role_domains.add_domain_controller(cloud_config,leader_details[domain], name,control_ipv4_addr,game_ipv4_addr,password, domain)
-        leader_details[domain]['control_addraddr'].append(control_ipv4_addr)
-        leader_details[domain]['game_addraddr'].append(game_ipv4_addr)
+        leader_details[domain]['control_addr'].append(control_ipv4_addr)
+        leader_details[domain]['game_addr'].append(game_ipv4_addr)
         ret["additional_dc_setup_"+name]=results
         
     ret["domain_leaders"] = leader_details    
