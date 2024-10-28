@@ -192,22 +192,25 @@ class OpenstackCloud:
     def wait_for_ready(self,enterprise, ret):
         waiting = True
         while waiting:
-            print("Waiting for instances to be ready. Sleeping 5 seconds...")
-            time.sleep(10)
-            waiting = False
-            for node in ret['nodes']:
-                id=node['id']
-                if not node['is_ready']: 
-                    nova_instance = self.nova_sess.servers.get(id)
-                    node['nova_status'] = nova_instance.status
-                    if nova_instance.status == 'ACTIVE':
-                        print("Node " + node['name'] + " is ready!")
-                        node['is_ready'] = True
-                    elif nova_instance.status == 'BUILD':
-                        waiting = True
-                    else:
-                        errstr = "Node " + node['name'] + " is neither BUILDing or ACTIVE.  Assuming error has occured.  Exiting...."
-                        raise RuntimeError(errstr)
+            try:
+                print("Waiting for instances to be ready. Sleeping 5 seconds...")
+                time.sleep(10)
+                waiting = False
+                for node in ret['nodes']:
+                    id=node['id']
+                    if not node['is_ready']: 
+                        nova_instance = self.nova_sess.servers.get(id)
+                        node['nova_status'] = nova_instance.status
+                        if nova_instance.status == 'ACTIVE':
+                            print("Node " + node['name'] + " is ready!")
+                            node['is_ready'] = True
+                        elif nova_instance.status == 'BUILD':
+                            waiting = True
+                        else:
+                            errstr = "Node " + node['name'] + " is neither BUILDing or ACTIVE.  Assuming error has occured.  Exiting...."
+                            raise RuntimeError(errstr)
+            except:
+                pass
 
         print('All nodes are ready')
 
