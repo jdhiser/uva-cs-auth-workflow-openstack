@@ -98,7 +98,148 @@ setup time.
 
 # Deploying in Vanderbilt CAGE2 infrastructure.
 
-* Run `deploy-nodes.py` and `post-deploy.py` to get a `post-deploy-output.json`.  
+## Setup:
+
+In the openstack project you'll be using for the Moodle workfloe, you'll need to allocate a node on which
+to run the deployment and provisioning.  To do this do the following:
+
+* Currently, we have created a new network in openstack (`green-network`), and a new subnet
+  (10.10.50.0/24 - `green-subnet`) in this network.
+  > NOTE: Be sure there is a DNS nameserver in the subnet, and set it with the following command:
+  >
+  > `openstack subnet set --dns-nameserver <dns-nameserver-ip-address>` <subnet-id>
+* In this new subnet, we created a new instance using the `Ubuntu22.04` image (a minimal Ubuntu 22.04 image),
+  and called the image `workflow-manager`.
+
+In the `ubuntu` account (i.e. the default user account) of the `workflow-manager` host:
+
+* Copy the following files into the account:
+  1. The private key you use to access github into the `.ssh` directory (which is under the ubuntu user's home
+     directory).
+  2. The `castle-control` private key from the <castle-vm> project into the `.ssh`
+     directory as well.  It is located at:
+     ```
+     <castle-vm-root>/CreateVMs/VelociraptorVMs/secrets/castle-control
+     ```
+        >NOTE: **BEFORE COPYING THE `castle-control` KEY, MAKE SURE IT IS IN RSA FORMAT**.  If it is not in RSA
+        >format, use the following command to convert it:
+        > 
+        >`ssh-keygen -p -N "" -m PEM -f <path-to-castle-control-key>`
+  3. The `<openstack-project-name>-openrc.sh` file, which used to authenticate openstack shell commands to openstack,
+     into the ubuntu user's home directory. `<openstack-project-name>` is the name of the openstack project you're using
+     for the Moodle workflow.
+
+
+* **EVERY TIME YOU LOG IN** you will need to execute the following commands:
+  ```
+  . ~/<openstack-project-name>-openrc.sh
+  eval $(ssh-agent)
+  ssh-add ~/.ssh/castle-control
+  ```
+
+or put them in the `.bashrc` file.
+
+Now, execute the following commands:
+
+```commandline
+cd
+mkdir -p Git
+cd Git
+git clone git@github.com:CASTLEGym/uva-cs-auth-workflow-openstack.git
+cd uva-cs-auth-workflow-openstack
+```
+
+> NOTE: You may have to checkout a particular branch, i.e.
+> ```commandline
+> git checkout <branch-name>
+> ```
+
+## Running deployment:
+
+To run deployment, run
+
+```commandline
+./deploy-nodes.py <arguments>
+```
+
+as above.
+
+Once `deploy-node.py` finishe successfully, it should render output similar to that below
+
+```commandline
+Setting up nodes.
+  Registering windows on dc1
+  ipv4 addr (control): 10.10.50.44
+  ipv4 addr (game): 10.10.50.44
+  password: 2n0A1db40MYy3DdDPdd7
+  Registering windows on dc2
+  ipv4 addr (control): 10.10.50.114
+  ipv4 addr (game): 10.10.50.114
+  password: wS8cVHIjJBHyN65vchwi
+  Registering windows on winep1
+  ipv4 addr (control): 10.10.50.195
+  ipv4 addr (game): 10.10.50.195
+  password: yolcnB2f1arqlaLXByld
+```
+
+**THESE PASSWORDS ARE VERY IMPORTANT.**  Below is a table of the hosts and their corrsponding passwords according to
+this output:
+
+| hostname | password             |
+|----------|----------------------|
+| dc1      | 2n0A1db40MYy3DdDPdd7 |
+| dc2      | wS8cVHIjJBHyN65vchwi |
+| winep1   | yolcnB2f1arqlaLXByld |
+
+**For each of these hosts**, do the following:
+
+1. Log in to the host:
+   ```commandline
+   ssh -l administrator <hostname>
+   ``` 
+
+2. Enter the password for the host when prompted.
+
+3. A command-prompt will execute once you've logged in to the host.  Execute a powershell by executing the
+   `powershell` command:
+   ```commandline
+   powershell
+   ```
+4. Execute the `ipconfig command`:
+   ```commandline
+   ipconfig
+   ```
+   It will render output similar to the following:
+   ```commandline
+   Windows IP Configuration
+
+
+   Ethernet adapter <NETADAPTER NAME>:
+
+      Connection-specific DNS Suffix  . : <DNS SUFFIX>
+      Link-local IPv6 Address . . . . . : XXXX::XXXX:XXXX:XXXX:XXXX%4
+      IPv4 Address. . . . . . . . . . . : XXX.XXX.XXX.XXX
+      Subnet Mask . . . . . . . . . . . : XXX.XXX.XXX.XXX
+      Default Gateway . . . . . . . . . : XXX.XXX.XXX.XXX
+   ```
+
+5. Using the `<NETADAPTER-NAME>` from the output of the `ipconfig` command above, execute the following command:
+   ```commandline
+   rename-netadapter -name <NETADAPTER-NAME> -newname "Ethernet Instance 0"
+   ```
+
+6. Enter the `exit` command to exit the powershell:
+   ```commandline
+   exit
+   ```
+
+7. Enter the `exit` command again to exit the command-prompt and log out of the host:
+   ```commandline
+   exit
+   ```
+
+
+* Run `post-deploy.py` to get a `post-deploy-output.json`.  
 Use a enterprise configuration file that matches the VU deployment you wish to run the workflow on.
 (E.g. cage2-ssh for the ssh workflow, or cage2-shib for the shib and Moodle workflows.)
 Run `clean-nodes.py` to remove all nodes.
