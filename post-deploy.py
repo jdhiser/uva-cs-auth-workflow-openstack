@@ -11,8 +11,8 @@ import role_moodle
 from datetime import datetime
 from joblib import Parallel, delayed
 
-use_parallel=False
-verbose=True
+use_parallel=True
+verbose=not use_parallel
 
 
 
