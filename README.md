@@ -100,7 +100,7 @@ setup time.
 
 ## Setup:
 
-In the openstack project you'll be using for the Moodle workfloe, you'll need to allocate a node on which
+In the openstack project you'll be using for the Moodle workflow, you'll need to allocate a node on which
 to run the deployment and provisioning.  To do this do the following:
 
 * Currently, we have created a new network in openstack (`green-network`), and a new subnet

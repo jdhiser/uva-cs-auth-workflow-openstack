@@ -8,11 +8,11 @@
 			"roles": [ "domain_controller_leader", "windows" ]
 		},
 		{
-                        "name": "dc2" ,
-                        "os": "win2k22",
-                        "domain": "castle",
-                        "roles": [ "domain_controller", "windows" ]
-                },
+			"name": "dc2" ,
+			"os": "win2k22",
+			"domain": "castle",
+			"roles": [ "domain_controller", "windows" ]
+		},
 		{
 			"name": "identity",
 			"os": "Jammy-IdP",
@@ -33,11 +33,11 @@
 			"user": "standard user"
 		},
 		{
-                        "name": "winep1",
-                        "os": "win2k22",
-                        "domain": "castle",
-                        "roles": [ "endpoint", "windows", "personal" ],
-                        "user": "standard user"
-                }
+			"name": "winep1",
+			"os": "win2k22",
+			"domain": "castle",
+			"roles": [ "endpoint", "windows", "personal" ],
+			"user": "standard user"
+		}
 	]
 }
