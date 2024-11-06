@@ -6,7 +6,7 @@ from shell_handler import ShellHandler
 
 
 domain_safe_mode_password = 'hello!321' # generate_password(12)
-verbose = True
+verbose = False
 
 def deploy_forest(cloud_config,name,control_ipv4_addr, game_ipv4_addr,password,domain):
 
@@ -51,17 +51,17 @@ def deploy_forest(cloud_config,name,control_ipv4_addr, game_ipv4_addr,password,d
             if 'Attempting to perform the' in str(stdout2)+ str(stderr2):
                 # server is starting up, try again.
                 status_received=False
-                time.sleep(5)
+                time.sleep(10)
             else:
                 status_received=True
         except paramiko.ssh_exception.SSHException:
-            time.sleep(5)
+            time.sleep(10)
             pass
         except paramiko.ssh_exception.NoValidConnectionsError:
-            time.sleep(5)
+            time.sleep(10)
             pass
         except ConnectionResetError:
-            time.sleep(5)
+            time.sleep(10)
             pass
 
     if not 'ReplicaDirectoryServers' in str(stdout2):
@@ -183,17 +183,17 @@ def add_domain_controller(cloud_config,leader_details,name,control_ipv4_addr, ga
             stdout2,stderr2,exit_status2 = shell.execute_powershell("get-addomain", verbose=verbose)
             if not 'ReplicaDirectoryServers' in str(stdout2):
                 print("Connected, waiting for AD to start up.") 
-                time.sleep(2)
+                time.sleep(10)
                 continue
             status_received=True
             stdout.append(stdout2)
             stderr.append(stderr2)
             exit_status.append(exit_status2)
         except paramiko.ssh_exception.SSHException:
-            time.sleep(2)
+            time.sleep(10)
             pass
         except paramiko.ssh_exception.NoValidConnectionsError:
-            time.sleep(2)
+            time.sleep(10)
             pass
 
     if not "stdout2" in locals() or not 'ReplicaDirectoryServers' in str(stdout2):
@@ -343,17 +343,18 @@ def join_domain_linux(name, leader_admin_password, control_ipv4_addr, game_ipv4_
     install_packages_cmd="sudo apt update && sudo env DEBIAN_FRONTEND=noninteractive apt install -y dnsutils iputils-ping traceroute telnet tcpdump python-is-python3 chrony krb5-user realmd sssd sssd-tools adcli samba-common-bin"
 
     set_chrony_command=(
-        "sudo sed -i '/pool ntp.ubuntu.com        iburst maxsources 4/i pool {}        iburst maxsources 5' {} ; "
-        "sudo systemctl enable chrony ; "
-        "sudo systemctl restart chrony "
-        ).format(fqdn_domain_name, chrony_config_path)
+        "sudo sed -i '/pool ntp.ubuntu.com        iburst maxsources 4/i pool {}        iburst maxsources 5' {} ; ".format(fqdn_domain_name, chrony_config_path) +
+        "sudo systemctl enable chrony ; " +
+        "sudo systemctl restart chrony; " +
+        "while ! sudo chronyc tracking|grep 'Leap status     : Normal'; do echo waiting for chrony to sync time; sleep 1; done "
+        )
 
 
     krb5_cmd= (
             "sudo sed -i 's/default_realm = .*/default_realm = {}/' {} ; "
             "sudo sed -i '/\\[libdefaults\\]/a \  rdns=false ' {} ;  "
-            "echo {} | sudo kinit administrator@{} ;"
-            "sleep 1; sudo klist "
+            "while echo {} | sudo kinit administrator@{} 2>&1 | grep 'Cannot find KDC' ; do echo waiting for kinit to succeed; sudo netplan apply; sleep 1; done ; "
+            "sudo klist "
             ).format(enterprise_name.upper(), krdb_config_path, krdb_config_path, leader_admin_password, fqdn_domain_name.upper())
 
     realm_cmd= (
@@ -364,7 +365,7 @@ def join_domain_linux(name, leader_admin_password, control_ipv4_addr, game_ipv4_
     cmds= '(' + set_allow_password + ';' + set_dns_command + ';' + install_packages_cmd + ';' + set_chrony_command + ';' + krb5_cmd + ';' + realm_cmd + ') 2>&1'
 
 
-    shell = ShellHandler(control_ipv4_addr,'ubuntu',None)
+    shell = ShellHandler(control_ipv4_addr,'ubuntu',None) 
     stdout,stderr,exit_status = shell.execute_cmd(cmds, verbose=verbose)
 
     shell.execute_cmd("sudo reboot now" , verbose=verbose)
@@ -387,11 +388,11 @@ def join_domain_linux(name, leader_admin_password, control_ipv4_addr, game_ipv4_
         except paramiko.ssh_exception.SSHException:
             print("  Waiting for reboot of linux domain member with ip={}(Expect socket closed by peer messages).".format(control_ipv4_addr))
 
-            time.sleep(2)
+            time.sleep(5)
             pass
         except paramiko.ssh_exception.NoValidConnectionsError:
             print("  Waiting for reboot of linux domain member with ip={}(Expect socket closed by peer messages).".format(control_ipv4_addr))
-            time.sleep(2)
+            time.sleep(5)
             pass
 
     try: stdout2

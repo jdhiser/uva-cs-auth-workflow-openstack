@@ -112,6 +112,7 @@ def deploy_human(cloud_config,enterprise,enterprise_built):
         access_list.append({
             "node": node, 
             "control_addr": control_ipv4_addr, 
+            "cloud_config": cloud_config, 
             "game_addr": game_ipv4_addr, 
             "password": str(password) 
         })
@@ -145,6 +146,7 @@ def setup_moodle_idps(cloud_config,enterprise,enterprise_built):
         control_ipv4_addr,game_ipv4_addr,password = extract_creds(enterprise_built,name)
         access_list.append({
             "node": node, 
+            "cloud_config": cloud_config, 
             "domain_leader": leader_details[domain], 
             "control_addr": control_ipv4_addr, 
             "game_addr": game_ipv4_addr, 
@@ -181,6 +183,7 @@ def setup_moodle_sps(cloud_config,enterprise,enterprise_built):
         access_list.append({
             "node": node, 
             "domain_leader": leader_details[domain], 
+            "cloud_config": cloud_config, 
             "control_addr": control_ipv4_addr, 
             "game_addr": game_ipv4_addr, 
             "password": str(password) 
@@ -200,6 +203,43 @@ def setup_moodle_sps(cloud_config,enterprise,enterprise_built):
         
     return ret
 
+def setup_moodle_idps_part2(cloud_config,enterprise,enterprise_built):
+    ret={}
+    access_list=[]
+    idps = list(filter(lambda x: 'idp' in x['roles'], enterprise['nodes']))
+    leader_details=enterprise_built['setup']['setup_domains']['domain_leaders']
+    for node in idps:
+        name = node['name']
+        domain = node['domain']
+        if domain == None: 
+            print("No domain for IDP {} to configure against".format(name))
+            continue
+        print("Configuring IDP against domain on " + name)
+        control_ipv4_addr,game_ipv4_addr,password = extract_creds(enterprise_built,name)
+        access_list.append({
+            "node": node, 
+            "cloud_config": cloud_config, 
+            "domain_leader": leader_details[domain], 
+            "control_addr": control_ipv4_addr, 
+            "game_addr": game_ipv4_addr, 
+            "password": str(password) 
+        })
+
+    results = []
+    if use_parallel:
+        # parallel
+        results = Parallel(n_jobs=10)(delayed(role_moodle.setup_moodle_idp_part2)(access) for access in access_list)
+    else:
+        # sequential
+        for access in access_list:
+            print("Setting up IDP, part2, on " + access['node']['name'])
+            results.append(role_moodle.setup_moodle_idp_part2(access))
+
+    ret['setup_moodle_idp']=results
+        
+    return ret
+
+
 
 def setup_enterprise(cloud_config,to_build,built):
     built['setup']={}
@@ -209,6 +249,7 @@ def setup_enterprise(cloud_config,to_build,built):
     built['setup']['deploy_human'] = deploy_human(cloud_config,to_build,built)
     built['setup']['setup_moodle_idps'] = setup_moodle_idps(cloud_config,to_build,built)
     built['setup']['setup_moodle_sps'] = setup_moodle_sps(cloud_config,to_build,built)
+    built['setup']['setup_moodle_idps_part2'] = setup_moodle_idps_part2(cloud_config,to_build,built)
 
 
 

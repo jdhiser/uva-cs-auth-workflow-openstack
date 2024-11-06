@@ -1,7 +1,7 @@
 from shell_handler import ShellHandler
 import paramiko
 
-verbose=True
+verbose=False
 
 
 def do_rename_adapter(control_ip:str, user:str, password:str, rename_ip:str, new_name:str):
