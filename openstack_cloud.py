@@ -11,16 +11,15 @@ import glanceclient
 import openstack
 
 
-
-
 class OpenstackCloud:
 
     def __init__(self, cloud_config):
         self.cloud_config = cloud_config
+        self.conn = None
         self.sess = self.get_session()
         self.nova_sess = nova_client.Client(version=2.4, session=self.sess)
         self.servers = self.query_servers()
-        self.glclient = glanceclient.Client(version=2, session=self.sess)
+        self.glclient = glanceclient.Client(version="2", session=self.sess)
         self.neutronClient = neutronclient.Client(session=self.sess)
         self.designateClient = designate_client.Client(session=self.sess)
 
@@ -30,16 +29,12 @@ class OpenstackCloud:
 
         """Return keystone session"""
 
-
-        
-
         # Extract environment variables set when sourcing the openstack RC file.
         user_domain = os.environ.get('OS_USER_DOMAIN_NAME')
         user = os.environ.get('OS_USERNAME')
         password = os.environ.get('OS_PASSWORD')
         project_id = os.environ.get('OS_PROJECT_ID')
         auth_url = os.environ.get('OS_AUTH_URL')
-
 
         # Create user / password based authentication method.
         # https://goo.gl/VxD2FQ
@@ -68,7 +63,6 @@ class OpenstackCloud:
             servers[server.human_id] = server_dict
         return servers
 
-
     def find_zone(self, enterprise_url):
         zones = self.designateClient.zones.list()
         for zone in zones:
@@ -76,67 +70,81 @@ class OpenstackCloud:
                 return zone
         return None
 
-    def check_deploy_ok(self,enterprise):
+    def check_deploy_ok(self, enterprise):
         enterprise_url = self.cloud_config['enterprise_url']
         zone = self.find_zone(enterprise_url)
-        if not zone is None:
-                print(f"Zone already exists: {enterprise_url}.")
-                return False
-        for node in enterprise['nodes']:
-            to_deploy_name = node['name']
-            for instance_key in self.servers:
-                instance_name=self.servers[instance_key]['name']
-                if to_deploy_name.strip() == instance_name.strip():
-                    print("Found that server " + instance_name + " already exists.")
-                    return False
+        if zone is not None:
+            print(f"Zone already exists: {enterprise_url}.")
+            return False
+
+        server_name_set = {x['name'].strip() for x in self.servers.values()}
+        deploy_name_set = {x['name'].strip() for x in enterprise['nodes']}
+        deployed_name_set = deploy_name_set.intersection(server_name_set)
+        if len(deployed_name_set) != 0:
+            for name in deployed_name_set:
+                print(f"Found that server {name} already exists.")
+            return False
         return True
 
-    def os_to_image(self,os_name):
+    def query_deploy_ok(self, enterprise):
+        enterprise_url = self.cloud_config['enterprise_url']
+        zone = self.find_zone(enterprise_url)
+        if zone is None:
+            print(f"Zone does not exist. Creating: {enterprise_url}.")
+            self.designateClient.zones.create(enterprise_url + ".", email="root@" + enterprise_url)
 
-        if not os_name in self.cloud_config['image_map']:
-                return os_name
+        server_name_set = {x['name'].strip() for x in self.servers.values()}
+        deploy_name_set = {x['name'].strip() for x in enterprise['nodes']}
+        undeployed_name_set = deploy_name_set - server_name_set
+        if len(undeployed_name_set) != 0:
+            for name in undeployed_name_set:
+                print(f"Found that server {name} does not exist.")
+                return False
+        return True
+
+    def os_to_image(self, os_name):
+
+        if os_name not in self.cloud_config['image_map']:
+            return os_name
         return self.cloud_config['image_map'][os_name]
 
-    def size_to_flavor(self,size_name):
-        return self.cloud_config['instance_size_map'].get(size_name,"m1.small")
+    def size_to_flavor(self, size_name):
+        return self.cloud_config['instance_size_map'].get(size_name, "m1.small")
 
-    def find_image_by_name(self,name):
+    def find_image_by_name(self, name):
         images = self.glclient.images.list()
         found_image = None
         for image in images:
-            if image['name'] == name and found_image == None:
-                found_image=image
-            elif image['name'] == name and found_image != None:
-                str="Duplicate images named " + name 
-                raise NameError(str)
-        if found_image == None:
-            str="Image not found: " + name 
-            raise NameError(str)
+            if image['name'] == name and found_image is None:
+                found_image = image
+            elif image['name'] == name and found_image is not None:
+                str_value = "Duplicate images named " + name
+                raise NameError(str_value)
+        if found_image is None:
+            str_value = "Image not found: " + name
+            raise NameError(str_value)
         print("  Found image id: " + found_image['id'])
         return found_image
 
-    def find_network_by_name(self,name):
-        ret = self.neutronClient.list_networks(name=name)
+    def find_network_by_name(self, name):
+        ret = self.neutronClient.list_networks(name=name, project_id=self.sess.auth.project_id)
         networks = ret['networks']
         found_network = None
         for network in networks:
-            if network['name'] == name and found_network == None:
-                found_network=network
-            elif network['name'] == name and found_network != None:
-                str="Duplicate networks named " + name 
-                raise NameError(str)
-        if found_network == None:
-            str="Network not found: " + name 
-            raise NameError(str)
+            if network['name'] == name and found_network is None:
+                found_network = network
+            elif network['name'] == name and found_network is not None:
+                str_value = f"Duplicate networks named {name}"
+                raise NameError(str_value)
+        if found_network is None:
+            str_value = f"Network not found: {name}"
+            raise NameError(str_value)
         print("  Found network id: " + found_network['id'])
         return found_network
 
+    def create_nodes(self, enterprise, ret):
 
-
-
-    def create_nodes(self,enterprise, ret):
-
-        ret['nodes']=[]
+        ret['nodes'] = []
 
         if not ret['check_deploy_ok']:
             errstr = "  Found that one or more nodes already exist, aborting deploy."
@@ -147,7 +155,7 @@ class OpenstackCloud:
             print("Creating server named " + name)
             os_name = node['os']
             size = node.get('size', "small")
-            domain = node.get('domain',"")
+            domain = node.get('domain', "")
             keypair = self.cloud_config['keypair']
 
             image = self.os_to_image(os_name)
@@ -158,38 +166,98 @@ class OpenstackCloud:
                 errstr = "Found 0 or more than 1 security groups called " + security_group + "\n" + str(all_groups)
                 raise RuntimeError(errstr)
 
-            network = node.get('network',self.cloud_config['external_network'])
+            network = node.get('network', self.cloud_config['external_network'])
 
             nova_image = self.find_image_by_name(image)
             # nova_flavor = self.nova_sess.flavors.find(name=flavor)
             nova_net = self.find_network_by_name(network)
             nova_nics = [{'net-id': nova_net['id']}]
-            nova_instance = self.conn.create_server(name=name, image=image, flavor=flavor, key_name=keypair, security_groups=[security_group], nics=nova_nics)
+            nova_instance = self.conn.create_server(
+                name=name,
+                image=image,
+                flavor=flavor,
+                key_name=keypair,
+                security_groups=[security_group],
+                nics=nova_nics
+            )
             time.sleep(5)
             print("  Server " + name + " has id " + nova_instance.id)
             nova_instance = self.nova_sess.servers.get(nova_instance.id)
             # print(dir(nova_instance))
-            new_node = {}
-            new_node['name'] = name
-            new_node['flavor'] = flavor
-            new_node['size'] = size
-            new_node['os'] = os_name
-            new_node['domain'] = domain
-            new_node['image'] = image
-            new_node['security_group'] = security_group
-            new_node['network'] = network
-            new_node['keypair'] = keypair
-            new_node['nova_image'] = nova_image
-            new_node['nova_nics'] = nova_nics
-            new_node['is_ready'] = False
-            new_node['nova_status'] = nova_instance.status
-            new_node['id'] = nova_instance.id
-            new_node['enterprise_description'] = node
+            new_node = {
+                'name': name,
+                'flavor': flavor,
+                'size': size,
+                'os': os_name,
+                'domain': domain,
+                'image': image,
+                'security_group': security_group,
+                'network': network,
+                'keypair': keypair,
+                'nova_image': nova_image,
+                'nova_nics': nova_nics,
+                'is_ready': False,
+                'nova_status': nova_instance.status,
+                'id': nova_instance.id,
+                'enterprise_description': node
+            }
             ret['nodes'].append(new_node)
         return ret
 
-        
-    def wait_for_ready(self,enterprise, ret):
+    def query_nodes(self, enterprise, ret):
+
+        ret['nodes'] = []
+
+        if not ret['check_deploy_ok']:
+            errstr = "  Found that one or more nodes already exist, aborting deploy."
+            raise RuntimeError(errstr)
+
+        for node in enterprise['nodes']:
+            name = node['name']
+            print("Querying server named " + name)
+            os_name = node['os']
+            size = node.get('size', "small")
+            domain = node.get('domain', "")
+            keypair = self.cloud_config['keypair']
+
+            image = self.os_to_image(os_name)
+            flavor = self.size_to_flavor(size)
+            security_group = self.cloud_config['security_group']
+            all_groups = self.conn.list_security_groups({"name": security_group})
+            if not len(all_groups) == 1:
+                errstr = "Found 0 or more than 1 security groups called " + security_group + "\n" + str(all_groups)
+                raise RuntimeError(errstr)
+
+            network = node.get('network', self.cloud_config['external_network'])
+
+            nova_image = self.find_image_by_name(image)
+            # nova_flavor = self.nova_sess.flavors.find(name=flavor)
+            nova_net = self.find_network_by_name(network)
+            nova_nics = [{'net-id': nova_net['id']}]
+            nova_instance = self.servers[name]
+            print("  Server " + name + " has id " + nova_instance['id'])
+            # print(dir(nova_instance))
+            new_node = {
+                'name': name,
+                'flavor': flavor,
+                'size': size,
+                'os': os_name,
+                'domain': domain,
+                'image': image,
+                'security_group': security_group,
+                'network': network,
+                'keypair': keypair,
+                'nova_image': nova_image,
+                'nova_nics': nova_nics,
+                'is_ready': False,
+                'nova_status': nova_instance['status'],
+                'id': nova_instance['id'],
+                'enterprise_description': node
+            }
+            ret['nodes'].append(new_node)
+        return ret
+
+    def wait_for_ready(self, ret):
         waiting = True
         while waiting:
             try:
@@ -197,9 +265,9 @@ class OpenstackCloud:
                 time.sleep(10)
                 waiting = False
                 for node in ret['nodes']:
-                    id=node['id']
+                    id_value = node['id']
                     if not node['is_ready']: 
-                        nova_instance = self.nova_sess.servers.get(id)
+                        nova_instance = self.nova_sess.servers.get(id_value)
                         node['nova_status'] = nova_instance.status
                         if nova_instance.status == 'ACTIVE':
                             print("Node " + node['name'] + " is ready!")
@@ -207,34 +275,34 @@ class OpenstackCloud:
                         elif nova_instance.status == 'BUILD':
                             waiting = True
                         else:
-                            errstr = "Node " + node['name'] + " is neither BUILDing or ACTIVE.  Assuming error has occured.  Exiting...."
+                            errstr = (
+                                f"Node {node['name']} is neither BUILDing or ACTIVE.  "
+                                "Assuming error has occured.  Exiting...."
+                            )
                             raise RuntimeError(errstr)
-            except:
+            except Exception as _:
                 pass
 
         print('All nodes are ready')
 
         return ret
 
-    def collect_info(self,enterprise,enterprise_built):
+    def collect_info(self, enterprise, enterprise_built):
         network = self.cloud_config['external_network']
         ret = enterprise_built
         for node in enterprise_built['nodes']:
-            id = node['id']
+            id_value = node['id']
             name = node['name']
-            enterprise_node = next(filter( lambda x: name == x['name'], enterprise['nodes']))
-            nova_instance = self.nova_sess.servers.get(id)
-            node['addresses']=[ 
-                    nova_instance.addresses[network][0], # control address -- as we don't have this yet, just use the flat netowrk
-                    nova_instance.addresses[network][0]  # game address -- as we don't have this yet, just use the flat netowrk
-                    ]
+            enterprise_node = next(filter(lambda x: name == x['name'], enterprise['nodes']))
+            nova_instance = self.nova_sess.servers.get(id_value)
+            node['addresses'] = [x[0] for x in nova_instance.addresses.values()]
 
             if 'windows' not in enterprise_node['roles']: 
                 print("Skipping password retrieve for non-windows node " + name)
                 continue
             while True:
-                nova_instance = self.nova_sess.servers.get(id)
-                node['password']=nova_instance.get_password(private_key=self.cloud_config['private_key_file'])
+                nova_instance = self.nova_sess.servers.get(id_value)
+                node['password'] = nova_instance.get_password(private_key=self.cloud_config['private_key_file'])
                 if node['password'] == '':
                     print("Waiting for password for node " + name + ".")
                     time.sleep(5)
@@ -243,52 +311,66 @@ class OpenstackCloud:
 
         return ret
 
-    def create_zones(self,enterprise,ret):
+    def create_zones(self, ret):
         enterprise_url = self.cloud_config['enterprise_url']
         print("Creating DNS zone " + enterprise_url)
         ret['create_zones'] = self.designateClient.zones.create(enterprise_url+".", email="root@"+enterprise_url)
         return ret
-   
-    def create_dns_names(self,enterprise,ret):
+
+    def query_zones(self, ret):
+        enterprise_url = self.cloud_config['enterprise_url']
+        print("Querying DNS zone " + enterprise_url)
+        ret['create_zones'] = self.designateClient.zones.get(enterprise_url + ".")
+        return ret
+
+    def create_dns_names(self, ret):
         enterprise_url = self.cloud_config['enterprise_url']
         zone = ret['create_zones']['id']
 
         for node in ret['nodes']:
             to_deploy_name = node['name']
-            addresses=node['addresses']
-            address=addresses[1]['addr']
-            print(f"Creating DNS zone {to_deploy_name}@{enterprise_url}/{address} " )
-            node['dns_setup'] = self.designateClient.recordsets.create(zone, to_deploy_name, 'A', [address])
+            addresses = node['addresses']
+            address = addresses[-1]['addr']
+            print(f"Creating DNS zone {to_deploy_name}@{enterprise_url}/{address} ")
+            try:
+                node['dns_setup'] = self.designateClient.recordsets.create(zone, to_deploy_name, 'A', [address])
+            except designate_client.exceptions.Conflict as c:
+                print(f"WARNING:  already a DNS record for {to_deploy_name}")
         return ret
 
-    def deploy_enterprise(self,enterprise):
-        ret = {} 
-        ret['check_deploy_ok'] = self.check_deploy_ok(enterprise)
+    def deploy_enterprise(self, enterprise):
+        ret = {'check_deploy_ok': self.check_deploy_ok(enterprise)}
         if not ret['check_deploy_ok']:
-            errstr = "  Found that deploying the network will conflict with existing setup."
+            errstr = "Found that deploying the network will conflict with existing setup."
             raise RuntimeError(errstr)
-        ret = self.create_zones(enterprise, ret)
-        ret = self.create_nodes (enterprise, ret)
-        ret = self.wait_for_ready(enterprise, ret)
+        ret = self.create_zones(ret)
+        ret = self.create_nodes(enterprise, ret)
+        ret = self.wait_for_ready(ret)
         ret = self.collect_info(enterprise, ret)
-        ret = self.create_dns_names(enterprise, ret)
+        ret = self.create_dns_names(ret)
         return ret
 
-    def cleanup_enterprise(self,enterprise):
-        enterprise_url=self.cloud_config['enterprise_url']
-        zone= self.find_zone(enterprise_url) 
-        if not zone is None:
+    def query_enterprise(self, enterprise):
+        ret = {'check_deploy_ok': self.query_deploy_ok(enterprise)}
+        if not ret['check_deploy_ok']:
+            errstr = "Found that the network is not fully deployed."
+            raise RuntimeError(errstr)
+        ret = self.query_zones(ret)
+        ret = self.query_nodes(enterprise, ret)
+        ret = self.collect_info(enterprise, ret)
+        ret = self.create_dns_names(ret)
+        return ret
+
+    def cleanup_enterprise(self, enterprise):
+        enterprise_url = self.cloud_config['enterprise_url']
+        zone = self.find_zone(enterprise_url)
+        if zone is not None:
             self.designateClient.zones.delete(zone['id'])
 
         for node in enterprise['nodes']:
             to_deploy_name = node['name']
             for instance_key in self.servers:
-                instance_name=self.servers[instance_key]['name']
+                instance_name = self.servers[instance_key]['name']
                 if to_deploy_name.strip() == instance_name.strip():
                     print("Removing server " + instance_name + ".")
                     self.nova_sess.servers.delete(self.servers[instance_key]['id'])
-
-
-
-
-

@@ -77,7 +77,7 @@ def deploy_forest(cloud_config,name,control_ipv4_addr, game_ipv4_addr,password,d
     remove_control_network_from_dns_cmd = (
             "set-dnsclient -interfacealias 'control-adapter' -registerthisconnectionsaddress 0 ; "
             " $srv=$(get-dnsserversetting -all) ;"
-            " $srv.ListeningIPAddress=@( $srv.ListeningIPAddress[1]) ;"
+            f" $srv.ListeningIPAddress=@( {game_ipv4_addr} ) ;"
             " set-dnsserversetting -inputobject $srv; "
             " ipconfig /flushdns  ; "
             " ipconfig /registerdns  ; "

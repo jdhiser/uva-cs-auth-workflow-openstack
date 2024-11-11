@@ -1,15 +1,16 @@
 {
 	"cloud_type": "openstack",
 	"os_env_file":	"/home/ubuntu/castle4-openrc.sh",
-	"private_key_file":	"/home/ubuntu/.ssh/castle-control",
-	"external_network": "green-network",
+	"private_key_file": "/home/ninehs/.ssh/castle-control",
+	"external_network": "control-network",
 	"keypair": "castle-control",
 	"image_map":
 	{
 		"win2k22": "ws20221",
-		"jammy": "Ubuntu22.04",
+		"jammy": "VelociraptorClientImageUpdate8",
 		"Jammy-IdP": "jammy-idp",
-		"Jammy-SP": "jammy-sp"
+		"Jammy-SP": "jammy-sp",
+		"ubuntu": "Ubuntu22.04"
 
 	},
 	"instance_size_map": 

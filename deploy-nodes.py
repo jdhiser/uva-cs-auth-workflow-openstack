@@ -1,12 +1,11 @@
 #!/usr/bin/env python
 
-
+import argparse
 import traceback
 import sys
 import json
 from datetime import datetime
 from openstack_cloud import OpenstackCloud
-
 
 
 def load_configs(cloud_config_filename, enterprise_filename):
@@ -16,63 +15,98 @@ def load_configs(cloud_config_filename, enterprise_filename):
 
     with open(enterprise_filename) as f:
         # Read the file
-        enterprise =  json.load(f)
-
+        enterprise = json.load(f)
 
     return cloud_config, enterprise
 
-def deploy_enterprise(cloud_config,enterprise):
-    ret = {}
-    ret["deploy_start"] = str(datetime.now())
+
+def deploy_enterprise(cloud_config, enterprise):
+    ret = {"deploy_start": str(datetime.now())}
     match cloud_config['cloud_type'].lower():
         case 'openstack':
-           print("Using openstack cloud") 
-           cloud =  OpenstackCloud(cloud_config)
+            print("Using openstack cloud")
+            cloud = OpenstackCloud(cloud_config)
         case _:
-            print("Cannot find cloud type: " + cloud_config['cloud_type'])
+            raise Exception(f"Cannot find cloud type: {cloud_config['cloud_type']}")
 
     ret['deployed'] = cloud.deploy_enterprise(enterprise)
 
     ret["deploy_end"] = str(datetime.now())
     return ret
 
+
+def query_enterprise(cloud_config, enterprise):
+    ret = {}
+    ret["deploy_start"] = str(datetime.now())
+    match cloud_config['cloud_type'].lower():
+        case 'openstack':
+            print("Using openstack cloud")
+            cloud = OpenstackCloud(cloud_config)
+        case _:
+            raise Exception(f"Cannot find cloud type: {cloud_config['cloud_type']}")
+
+    ret['deployed'] = cloud.query_enterprise(enterprise)
+
+    ret["deploy_end"] = str(datetime.now())
+    return ret
+
+
 def main():
 
-    if len(sys.argv) != 3:
-        print("Usage: " + sys.argv[0] + " cloud-config.json enterprise.json")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        prog=sys.argv[0],
+        description="Create stacks on openstack"
+    )
+
+    parser.add_argument(
+        "-c", "--cloud_config_file", required=False,
+        help="Path of cloud-config file"
+    )
+
+    parser.add_argument(
+        "-e", "--enterprise_config_file", required=False,
+        help="Path of enterprise-config file"
+    )
+
+    parser.add_argument(
+        "-q", "--query_only", required=False, action="store_true",
+        help="Perform queries only"
+    )
+
+    args = parser.parse_args()
 
     json_output = {}
     try:
         json_output["deploy_start_time"] = str(datetime.now())
-        cloud_config_filename = sys.argv[1]
-        enterprise_filename  = sys.argv[2]
-        cloud_config,enterprise = load_configs(cloud_config_filename, enterprise_filename)
+        cloud_config, enterprise_config = load_configs(args.cloud_config_file, args.enterprise_config_file)
 
         print("Deploying nodes.")
-        enterprise_built = deploy_enterprise(cloud_config,enterprise)
+        enterprise_built = query_enterprise(cloud_config, enterprise_config) if args.query_only \
+                else deploy_enterprise(cloud_config, enterprise_config)
+
         print("Deploying nodes, completed.")
 
         json_output['backend_config'] = cloud_config
-        json_output['enterprise_to_build'] = enterprise
+        json_output['enterprise_to_build'] = enterprise_config
         json_output['enterprise_built'] = enterprise_built
 
         json_output["deploy_end_time"] = str(datetime.now())
 
         print("Enterprise built.  Writing output to deploy-output.json.")
-    except:
+    except Exception as _:
         traceback.print_exc()
         print("Exception occured while setting up enterprise.  Dumping results to deploy-output.json anyhow.")
 
     with open("deploy-output.json", "w") as f:
-        json.dump(json_output,f)
+        json.dump(json_output, f, indent=4, sort_keys=True)
 
     return
 
+
 if __name__ == '__main__':
     # if args are passed, do main line.
-#    if len(sys.argv) != 1:
-        sys.exit(main())
+    # if len(sys.argv) != 1:
+    sys.exit(main())
 
 
 #    # otherwise do development of next step.
@@ -91,5 +125,3 @@ if __name__ == '__main__':
 #    with open("dev_output.json", "w") as f:
 #        json.dump(output,f)
 #
-
-
