@@ -1,7 +1,7 @@
 {
 	"cloud_type": "openstack",
 	"os_env_file":	"/home/ubuntu/castle4-openrc.sh",
-	"private_key_file": "/home/ninehs/.ssh/castle-control",
+	"private_key_file": "/home/ubuntu/.ssh/castle-control",
 	"external_network": "control-network",
 	"keypair": "castle-control",
 	"image_map":
