@@ -383,7 +383,7 @@ def join_domain_linux(name, leader_admin_password, control_ipv4_addr, game_ipv4_
             admin_user='administrator@' + fqdn_domain_name
             print("  Trying to verify reboot ... creds={}:{}:{}".format(control_ipv4_addr,admin_user,leader_admin_password))
             shell = ShellHandler(control_ipv4_addr, admin_user, leader_admin_password)
-            stdout2,stderr2,exit_status2 = shell.execute_cmd('realm list', verbose=verbose)
+            stdout2,stderr2,exit_status2 = shell.execute_cmd('sudo netplan apply; realm list', verbose=verbose)
             status_received=True
         except paramiko.ssh_exception.SSHException:
             print("  Waiting for reboot of linux domain member with ip={}(Expect socket closed by peer messages).".format(control_ipv4_addr))
