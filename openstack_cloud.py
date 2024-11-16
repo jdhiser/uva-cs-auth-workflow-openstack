@@ -16,6 +16,8 @@ class OpenstackCloud:
     def __init__(self, cloud_config):
         self.cloud_config = cloud_config
         self.conn = None
+        self.project_id = os.environ.get('OS_PROJECT_ID')
+
         self.sess = self.get_session()
         self.nova_sess = nova_client.Client(version=2.4, session=self.sess)
         self.servers = self.query_servers()
@@ -33,7 +35,6 @@ class OpenstackCloud:
         user_domain = os.environ.get('OS_USER_DOMAIN_NAME')
         user = os.environ.get('OS_USERNAME')
         password = os.environ.get('OS_PASSWORD')
-        project_id = os.environ.get('OS_PROJECT_ID')
         auth_url = os.environ.get('OS_AUTH_URL')
 
         # Create user / password based authentication method.
@@ -41,7 +42,7 @@ class OpenstackCloud:
         auth = v3.Password(user_domain_name=user_domain,
                            username=user,
                            password=password,
-                           project_id=project_id,
+                           project_id=self.project_id,
                            auth_url=auth_url)
 
         # Create OpenStack keystoneauth1 session.
@@ -161,8 +162,9 @@ class OpenstackCloud:
             image = self.os_to_image(os_name)
             flavor = self.size_to_flavor(size)
             security_group = self.cloud_config['security_group']
-            all_groups = self.conn.list_security_groups({"name": security_group})
-            if not len(all_groups) == 1:
+            all_groups = self.conn.list_security_groups()
+            project_groups = [x for x in all_groups if x.location.project.id == self.project_id and x.name == security_group]
+            if not len(project_groups) == 1:
                 errstr = "Found 0 or more than 1 security groups called " + security_group + "\n" + str(all_groups)
                 raise RuntimeError(errstr)
 
@@ -223,8 +225,9 @@ class OpenstackCloud:
             image = self.os_to_image(os_name)
             flavor = self.size_to_flavor(size)
             security_group = self.cloud_config['security_group']
-            all_groups = self.conn.list_security_groups({"name": security_group})
-            if not len(all_groups) == 1:
+            all_groups = self.conn.list_security_groups()
+            project_groups = [x for x in all_groups if x.location.project.id == self.project_id and x.name == security_group]
+            if not len(project_groups) == 1:
                 errstr = "Found 0 or more than 1 security groups called " + security_group + "\n" + str(all_groups)
                 raise RuntimeError(errstr)
 

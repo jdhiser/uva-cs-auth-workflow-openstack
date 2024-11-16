@@ -17,6 +17,6 @@
 	{
 		"small": "m1.medium"
 	},
-	"security_group": "all-traffic",
+	"security_group": "cage2-secgroup",
 	"enterprise_url": "castle.os"
 }
