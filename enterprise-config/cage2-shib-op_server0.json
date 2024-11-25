@@ -1,0 +1,103 @@
+{
+	"nodes":
+	[
+		{ 
+			"name": "dc1",
+			"os": "win2k22",
+			"domain": "castle",
+			"roles": [ "domain_controller_leader", "windows" ]
+		},
+		{
+			"name": "dc2" ,
+			"os": "win2k22",
+			"domain": "castle",
+			"roles": [ "domain_controller", "windows" ]
+		},
+		{
+			"name": "identity",
+			"os": "Jammy-IdP",
+			"domain": "castle",
+			"roles": [ "idp", "linux" ]
+		},
+		{
+			"name": "user0",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "user1",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "user2",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "user3",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "user4",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "op_host0",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "op_host1",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "op_host2",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "enterprise0",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "shared" ]
+		},
+		{
+			"name": "enterprise1",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "shared" ]
+		},
+		{
+			"name": "enterprise2",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "shared" ]
+		},
+		{
+			"name": "op_server0",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "sp", "linux" ]
+		}
+	]
+}
