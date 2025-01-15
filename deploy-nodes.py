@@ -39,8 +39,7 @@ def deploy_enterprise(cloud_config, enterprise):
 
 
 def query_enterprise(cloud_config, enterprise):
-    ret = {}
-    ret["deploy_start"] = str(datetime.now())
+    ret = {"deploy_start": str(datetime.now())}
     match cloud_config['cloud_type'].lower():
         case 'openstack':
             print("Using openstack cloud")

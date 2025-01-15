@@ -16,7 +16,10 @@ class OpenstackCloud:
     def __init__(self, cloud_config):
         self.cloud_config = cloud_config
         self.conn = None
+        self.network_name = None
         self.project_id = os.environ.get('OS_PROJECT_ID')
+        self.project_name = None
+        self.enterprise_url = None
 
         self.sess = self.get_session()
         self.nova_sess = nova_client.Client(version=2.4, session=self.sess)
@@ -28,6 +31,11 @@ class OpenstackCloud:
     def get_session(self):
         options = argparse.ArgumentParser(description='Awesome OpenStack App')
         self.conn = openstack.connect(options=options, verify=False)
+        project = self.conn.get_project(self.project_id)
+        self.project_name = project.name
+        self.enterprise_url = f"{self.project_name}.os"
+
+        self.cloud_config['enterprise_url'] = self.enterprise_url
 
         """Return keystone session"""
 
@@ -64,18 +72,17 @@ class OpenstackCloud:
             servers[server.human_id] = server_dict
         return servers
 
-    def find_zone(self, enterprise_url):
+    def find_zone(self):
         zones = self.designateClient.zones.list()
         for zone in zones:
-            if zone['name'] == (enterprise_url + '.'):
+            if zone['name'] == f"{self.enterprise_url}.":
                 return zone
         return None
 
     def check_deploy_ok(self, enterprise):
-        enterprise_url = self.cloud_config['enterprise_url']
-        zone = self.find_zone(enterprise_url)
+        zone = self.find_zone()
         if zone is not None:
-            print(f"Zone already exists: {enterprise_url}.")
+            print(f"Zone already exists: {self.enterprise_url}.")
             return False
 
         server_name_set = {x['name'].strip() for x in self.servers.values()}
@@ -88,17 +95,16 @@ class OpenstackCloud:
         return True
 
     def query_deploy_ok(self, enterprise):
-        enterprise_url = self.cloud_config['enterprise_url']
-        zone = self.find_zone(enterprise_url)
+        zone = self.find_zone()
         if zone is None:
-            print(f"Zone does not exist. Creating: {enterprise_url}.")
-            self.designateClient.zones.create(f"{enterprise_url}.", email="root@" + enterprise_url)
+            print(f"Zone does not exist. Creating: {self.enterprise_url}.")
+            self.designateClient.zones.create(f"{self.enterprise_url}.", email="root@" + self.enterprise_url)
         else:
-            print(f"Zone \"{enterprise_url}\" exists.  Deleting and re-creating ...")
-            self.designateClient.zones.delete(enterprise_url + ".")
-            while self.find_zone(enterprise_url) is not None:
+            print(f"Zone \"{self.enterprise_url}\" exists.  Deleting and re-creating ...")
+            self.designateClient.zones.delete(self.enterprise_url + ".")
+            while self.find_zone() is not None:
                 time.sleep(5)
-            self.designateClient.zones.create(f"{enterprise_url}.", email="root@" + enterprise_url)
+            self.designateClient.zones.create(f"{self.enterprise_url}.", email="root@" + self.enterprise_url)
 
         server_name_set = {x['name'].strip() for x in self.servers.values()}
         deploy_name_set = {x['name'].strip() for x in enterprise['nodes']}
@@ -259,8 +265,10 @@ class OpenstackCloud:
             flavor = self.size_to_flavor(size)
             security_group = self.cloud_config['security_group']
             all_groups = self.conn.list_security_groups()
-            project_groups = [x for x in all_groups if (
-                x.location.project.id == self.project_id and x.name == security_group) or x.id == security_group]
+            project_groups = [
+                x for x in all_groups
+                if (x.location.project.id == self.project_id and x.name == security_group) or x.id == security_group
+            ]
             if not len(project_groups) == 1:
                 errstr = "Found 0 or more than 1 security groups called " + security_group + "\n" + str(all_groups)
                 raise RuntimeError(errstr)
@@ -318,7 +326,7 @@ class OpenstackCloud:
                         else:
                             errstr = (
                                 f"Node {node['name']} is neither BUILDing or ACTIVE.  "
-                                "Assuming error has occured.  Exiting...."
+                                "Assuming error has occurred.  Exiting...."
                             )
                             raise RuntimeError(errstr)
             except Exception as _:   # noqa: F841
@@ -364,20 +372,17 @@ class OpenstackCloud:
         return ret
 
     def create_zones(self, ret):
-        enterprise_url = self.cloud_config['enterprise_url']
-        print("Creating DNS zone " + enterprise_url)
+        print("Creating DNS zone " + self.enterprise_url)
         ret['create_zones'] = self.designateClient.zones.create(
-            enterprise_url + ".", email="root@" + enterprise_url, ttl=60)
+                self.enterprise_url+".", email="root@"+self.enterprise_url, ttl=60)
         return ret
 
     def query_zones(self, ret):
-        enterprise_url = self.cloud_config['enterprise_url']
-        print("Querying DNS zone " + enterprise_url)
-        ret['create_zones'] = self.designateClient.zones.get(enterprise_url + ".")
+        print("Querying DNS zone " + self.enterprise_url)
+        ret['create_zones'] = self.designateClient.zones.get(f"{self.enterprise_url}.")
         return ret
 
     def create_dns_names(self, ret):
-        enterprise_url = self.cloud_config['enterprise_url']
         zone = ret['create_zones']['id']
 
         for node in ret['nodes']:
@@ -388,7 +393,7 @@ class OpenstackCloud:
             # Otherwise, any time an end point tries to refer to the node, it will use
             # The control address, and send all the data over the control network.
             address = addresses[-1]['addr']
-            print(f"Creating DNS zone {to_deploy_name}.{enterprise_url} = {address} ")
+            print(f"Creating DNS zone {to_deploy_name}.{self.enterprise_url} = {address} ")
             try:
                 node['dns_setup'] = self.designateClient.recordsets.create(zone, to_deploy_name, 'A', [address])
             except designate_client.exceptions.Conflict as _:  # noqa: F841
@@ -419,8 +424,7 @@ class OpenstackCloud:
         return ret
 
     def cleanup_enterprise(self, enterprise):
-        enterprise_url = self.cloud_config['enterprise_url']
-        zone = self.find_zone(enterprise_url)
+        zone = self.find_zone()
         if zone is not None:
             self.designateClient.zones.delete(zone['id'])
 
