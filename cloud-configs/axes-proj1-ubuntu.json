@@ -1,0 +1,21 @@
+{
+	"cloud_type": "openstack",
+	"os_env_file":	"/home/jdh8d/openstack-bundles/stable/openstack-base/openrc",
+	"private_key_file":	"/home/ubuntu/.ssh/id_rsa",
+	"external_network": "24534eee-6796-4354-b653-6d9377a1fbd0",
+	"keypair": "jdhKeyPair",
+	"image_map":
+	{
+		"win2k22": "ws2022-cs-license",
+		"jammy": "jammy-amd64",
+		"Jammy-IdP": "jammy-idp",
+		"Jammy-SP": "jammy-sp"
+
+	},
+	"instance_size_map": 
+	{
+		"small": "m1.small"
+	},
+	"security_group": "1c54cc5a-d387-4b1c-9aae-ca34fd57e846", 
+	"enterprise_url": "uva.os"
+}
