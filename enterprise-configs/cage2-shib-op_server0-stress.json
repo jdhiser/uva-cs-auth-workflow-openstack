@@ -1,0 +1,229 @@
+{
+	"nodes":
+	[
+		{ 
+			"name": "dc1",
+			"os": "win2k22",
+			"domain": "castle",
+			"roles": [ "domain_controller_leader", "windows" ]
+		},
+		{
+			"name": "dc2" ,
+			"os": "win2k22",
+			"domain": "castle",
+			"roles": [ "domain_controller", "windows" ]
+		},
+		{
+			"name": "identity",
+			"os": "Jammy-IdP",
+			"domain": "castle",
+			"roles": [ "idp", "linux" ]
+		},
+		{
+			"name": "op_server0",
+			"os": "Jammy-SP",
+			"domain": "castle",
+			"roles": [ "sp", "linux" ]
+		},
+		{
+			"name": "user0",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "user1",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "user2",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "user3",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "user4",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "user5",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "user6",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "user7",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "user8",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "user9",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "op_host0",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "op_host1",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "op_host2",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "op_host3",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "op_host4",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "op_host6",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "op_host6",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "op_host7",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "op_host8",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "op_host9",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "enterprise0",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "shared" ]
+		},
+		{
+			"name": "enterprise1",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "shared" ]
+		},
+		{
+			"name": "enterprise2",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "shared" ]
+		},
+		{
+			"name": "enterprise3",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "shared" ]
+		},
+		{
+			"name": "enterprise4",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "shared" ]
+		},
+		{
+			"name": "enterprise5",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "shared" ]
+		},
+		{
+			"name": "enterprise6",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "shared" ]
+		},
+		{
+			"name": "enterprise7",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "shared" ]
+		},
+		{
+			"name": "enterprise8",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "shared" ]
+		},
+		{
+			"name": "enterprise9",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "shared" ]
+		}
+	]
+}
