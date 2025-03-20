@@ -6,7 +6,7 @@ from shell_handler import ShellHandler
 
 
 domain_safe_mode_password = 'hello!321'  # generate_password(12)
-verbose = False
+verbose = True
 
 
 def deploy_forest(cloud_config, name, control_ipv4_addr, game_ipv4_addr, password, domain):
@@ -349,9 +349,9 @@ def join_domain_linux(name, leader_admin_password, control_ipv4_addr, game_ipv4_
     krb5_cmd = (
         f"sudo sed -i 's/default_realm = .*/default_realm = {enterprise_name.upper()}/' {krdb_config_path} ; " +
         f"sudo sed -i '/\\[libdefaults\\]/a \  rdns=false ' {krdb_config_path} ;  " +
-        f"count=1 ; while (( count < 30 )) ; do echo {leader_admin_password} | sudo kinit administrator@{fqdn_domain_name.upper()} 2>&1 " +
+        f"count=1 ; while (( count < 300 )) ; do echo {leader_admin_password} | sudo kinit administrator@{fqdn_domain_name.upper()} 2>&1 " +
         "|grep 'Cannot find KDC' ; res=${PIPESTATUS[2]} ; if (( res != 0 )) ; then break; fi ; echo waiting for kinit to succeed; " +
-        "sudo netplan apply; sleep 5;  count=$(( count + 1 )) ; done ; " +
+        "sudo netplan apply; sleep 30;  count=$(( count + 1 )) ; done ; " +
         "sudo klist "
     )
 
@@ -384,7 +384,10 @@ def join_domain_linux(name, leader_admin_password, control_ipv4_addr, game_ipv4_
                 name, control_ipv4_addr, admin_user, leader_admin_password))
             shell = ShellHandler(control_ipv4_addr, admin_user, leader_admin_password)
             stdout2, stderr2, exit_status2 = shell.execute_cmd('sudo netplan apply; realm list', verbose=verbose)
-            status_received = True
+            if not 'realm-name: {}'.format(fqdn_domain_name.upper()) in str(stdout2):
+                time.sleep(5)
+            else:
+                status_received = True
         except paramiko.ssh_exception.SSHException:
             print("  Waiting for reboot of linux domain member, {}, with ip={}(Expect socket closed by peer messages).".format(
                 name, control_ipv4_addr))

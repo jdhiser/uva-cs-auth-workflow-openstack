@@ -57,7 +57,7 @@ def register_windows(enterprise, enterprise_built, only):
 
     if use_parallel:
         # parallel
-        results = Parallel(n_jobs=10)(delayed(role_register.register_windows_instance)(i) for i in access_list)
+        results = Parallel(n_jobs=10, backend="threading")(delayed(role_register.register_windows_instance)(i) for i in access_list)
         ret['register_windows'] = results
     else:
         # sequential
@@ -94,7 +94,7 @@ def join_domains(cloud_config, enterprise, enterprise_built, only):
 
     if use_parallel:
         # parallel
-        results = Parallel(n_jobs=10)(delayed(role_domains.join_domain)(access) for access in access_list)
+        results = Parallel(n_jobs=10, backend="threading")(delayed(role_domains.join_domain)(access) for access in access_list)
     else:
         # sequential
         results = []
@@ -125,7 +125,7 @@ def deploy_human(cloud_config, enterprise, enterprise_built, only):
 
     if use_parallel:
         # parallel
-        results = Parallel(n_jobs=10)(delayed(role_human.deploy_human)(access) for access in access_list)
+        results = Parallel(n_jobs=10, backend="threading")(delayed(role_human.deploy_human)(access) for access in access_list)
     else:
         # sequential
         for access in access_list:
@@ -163,7 +163,7 @@ def setup_moodle_idps(cloud_config, enterprise, enterprise_built, only):
     results = []
     if use_parallel:
         # parallel
-        results = Parallel(n_jobs=10)(delayed(role_moodle.setup_moodle_idp)(access) for access in access_list)
+        results = Parallel(n_jobs=10, backend="threading")(delayed(role_moodle.setup_moodle_idp)(access) for access in access_list)
     else:
         # sequential
         for access in access_list:
@@ -201,7 +201,7 @@ def setup_moodle_sps(cloud_config, enterprise, enterprise_built, only):
     results = []
     if use_parallel:
         # parallel
-        results = Parallel(n_jobs=10)(delayed(role_moodle.setup_moodle_sp)(access) for access in access_list)
+        results = Parallel(n_jobs=10, backend="threading")(delayed(role_moodle.setup_moodle_sp)(access) for access in access_list)
     else:
         # sequential
         for access in access_list:
@@ -239,7 +239,7 @@ def setup_moodle_idps_part2(cloud_config, enterprise, enterprise_built, only):
     results = []
     if use_parallel:
         # parallel
-        results = Parallel(n_jobs=10)(delayed(role_moodle.setup_moodle_idp_part2)(access) for access in access_list)
+        results = Parallel(n_jobs=10, backend="threading")(delayed(role_moodle.setup_moodle_idp_part2)(access) for access in access_list)
     else:
         # sequential
         for access in access_list:

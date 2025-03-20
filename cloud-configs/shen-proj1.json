@@ -2,7 +2,7 @@
 	"cloud_type": "openstack",
 	"os_env_file":	"/home/jdh8d/openstack-bundles/stable/openstack-base/openrc",
 	"private_key_file":	"/home/jdh8d/.ssh/id_rsa",
-	"external_network": "24534eee-6796-4354-b653-6d9377a1fbd0",
+	"external_network": "ext_net",
 	"keypair": "jdhKeyPair",
 	"image_map":
 	{
@@ -16,6 +16,6 @@
 	{
 		"small": "m1.small"
 	},
-	"security_group": "1c54cc5a-d387-4b1c-9aae-ca34fd57e846", 
+	"security_group": "5acb66a7-6fe3-42be-a916-8f7395a21b6e",
 	"enterprise_url": "uva.os"
 }
