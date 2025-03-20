@@ -33,7 +33,7 @@ class OpenstackCloud:
         self.conn = openstack.connect(options=options, verify=False)
         project = self.conn.identity.find_project(self.project_id)
         self.project_name = project.name
-        self.enterprise_url = f"{self.project_name}.os"
+        self.enterprise_url = f"{self.project_name.lower()}.os"
 
         self.cloud_config['enterprise_url'] = self.enterprise_url
 
