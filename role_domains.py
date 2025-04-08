@@ -16,12 +16,20 @@ def deploy_forest(cloud_config, name, control_ipv4_addr, game_ipv4_addr, passwor
     print("Setting safe-mode password for domain to " + password)
 
     cmd = (
+        "reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\TimeProviders\\NtpServer /v Enabled /t REG_DWORD /d 1 /f; "
+        "reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\Parameters /v Type /t REG_SZ /d NTP /f; "
+        "reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\Config /v AnnounceFlags /t REG_DWORD /d 5 /f; "
+        "tzutil /s 'Eastern Standard Time' ;  "
+        "w32tm /config /manualpeerlist:'pool.ntp.org,0x1' /syncfromflags:manual /reliable:yes /update; "
+        "net stop w32time; "
+        "net start w32time; "
+        "w32tm /resync /force; "
         "Install-windowsfeature AD-domain-services ; "
         "Import-Module ADDSDeployment ;  "
         "$secure=ConvertTo-SecureString -asplaintext -string {} -force ; "
         "Install-ADDSForest -domainname {} -SafeModeAdministratorPassword $secure -verbose -NoRebootOnCompletion:$true -Force:$true ; "
         "wget https://www.python.org/ftp/python/3.12.1/python-3.12.1-embed-amd64.zip -Outfile python.zip; "
-        "Expand-Archive -force .\python.zip; "
+        "Expand-Archive -force .\\python.zip; "
         "mv python c:\\ ; "
         "icacls \"c:\\python\" /grant:r \"users:(RX)\" /C ; "
         "$oldpath = (Get-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager\Environment' -Name PATH).path; "
@@ -112,6 +120,14 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
     )
 
     adcmd = (
+        "reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\TimeProviders\\NtpServer /v Enabled /t REG_DWORD /d 1 /f; "
+        "reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\Parameters /v Type /t REG_SZ /d NTP /f; "
+        "reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\Config /v AnnounceFlags /t REG_DWORD /d 5 /f; "
+        "tzutil /s 'Eastern Standard Time' ;  "
+        "w32tm /config /manualpeerlist:'pool.ntp.org,0x1' /syncfromflags:manual /reliable:yes /update; "
+        "net stop w32time; "
+        "net start w32time; "
+        "w32tm /resync /force; "
         "Install-windowsfeature AD-domain-services ; "
         "Import-Module ADDSDeployment ;  "
         "Set-DnsClientServerAddress -serveraddress ('{}') -interfacealias 'game-adapter' ; "
@@ -340,6 +356,7 @@ def join_domain_linux(name, leader_admin_password, control_ipv4_addr, game_ipv4_
     install_packages_cmd = "sudo apt update && sudo env DEBIAN_FRONTEND=noninteractive apt install -y dnsutils iputils-ping traceroute telnet tcpdump python-is-python3 chrony krb5-user realmd sssd sssd-tools adcli samba-common-bin"
 
     set_chrony_command = (
+        "sudo timedatectl set-timezone America/New_York; " +
         "sudo sed -i '/pool ntp.ubuntu.com        iburst maxsources 4/i pool {}        iburst maxsources 5' {} ; ".format(fqdn_domain_name, chrony_config_path) +
         "sudo systemctl enable chrony ; " +
         "sudo systemctl restart chrony; " +
@@ -349,19 +366,23 @@ def join_domain_linux(name, leader_admin_password, control_ipv4_addr, game_ipv4_
     krb5_cmd = (
         f"sudo sed -i 's/default_realm = .*/default_realm = {enterprise_name.upper()}/' {krdb_config_path} ; " +
         f"sudo sed -i '/\\[libdefaults\\]/a \  rdns=false ' {krdb_config_path} ;  " +
-        f"count=1 ; while (( count < 300 )) ; do echo {leader_admin_password} | sudo kinit administrator@{fqdn_domain_name.upper()} 2>&1 " +
-        "|grep 'Cannot find KDC' ; res=${PIPESTATUS[2]} ; if (( res != 0 )) ; then break; fi ; echo waiting for kinit to succeed; " +
+        f"count=1 ; while (( count < 300 )) ; do echo {leader_admin_password} | sudo kinit administrator@{fqdn_domain_name.upper()};  " +
+        "res=${PIPESTATUS[1]} ; if (( res == 0 )) ; then break; fi ; echo waiting for kinit to succeed; " +
         "sudo netplan apply; sleep 30;  count=$(( count + 1 )) ; done ; " +
         "sudo klist "
     )
 
     realm_cmd = (
-        "sudo realm discover {};"
-        "echo {}| sudo realm join -U administrator {}  -v;"
-    ).format(fqdn_domain_name, leader_admin_password, fqdn_domain_name.upper())
+        "count=1 ; while (( count < 300 )) ; do " +
+        f"sudo realm discover {fqdn_domain_name};" +
+        "res=$?; if (( res == 0 )); then break; fi; echo 'Waiting for realm discover to succeed'; sleep 30s; done; " +
+        "count=1 ; while (( count < 300 )) ; do " +
+        f"echo {leader_admin_password}| sudo realm join -U administrator {fqdn_domain_name.upper()}  -v;" +
+        "res=${PIPESTATUS[1]};  if (( res == 0 )); then break; fi; echo 'Waiting for realm join to succeed'; sleep 30s ; done " 
+    )
 
     cmds = '(' + set_allow_password + ';' + set_dns_command + ';' + install_packages_cmd + ';' + \
-        set_chrony_command + ';' + krb5_cmd + ';' + realm_cmd + ') 2>&1 | tee /tmp/join_domain.log '
+        set_chrony_command + ';' + krb5_cmd + ';' + realm_cmd + ') 2>&1 | sudo tee /var/log/join_domain.log '
 
     shell = ShellHandler(control_ipv4_addr, 'ubuntu', None)
     stdout, stderr, exit_status = shell.execute_cmd(cmds, verbose=verbose)

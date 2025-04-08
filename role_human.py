@@ -2,7 +2,9 @@ from shell_handler import ShellHandler
 
 verbose = False
 
-human_plugin_version = "Downloads/pyhuman-moodle.zip"
+# human_plugin_version = "Downloads/pyhuman-moodle.zip"
+human_plugin_version = "Downloads/pyhuman-moodle-with-web.zip"
+
 
 
 def node_to_default_user(node):
@@ -39,6 +41,7 @@ def install_human_linux(node, user, control_ipv4_addr, password, cloud_config):
         'sudo rm -rf /opt/pyhuman ; ' +
         'sudo mkdir -p /opt/pyhuman ; ' +
         'cd /opt/pyhuman ; ' +
+        'sudo env DEBIAN_FRONTEND=noninteractive apt update ; ' +
         'sudo env DEBIAN_FRONTEND=noninteractive apt install -y python3 python3-pip virtualenv xvfb unzip ; ' +
         'sudo unzip /tmp/pyhuman.zip ; ' +
         'sudo sed -i "s/castle.os/{}/" /opt/pyhuman/app/workflows/browse_shibboleth.py /opt/pyhuman/app/workflows/moodle.py ; '.format(enterprise_url) +
