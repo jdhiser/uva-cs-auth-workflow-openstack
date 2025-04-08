@@ -343,7 +343,6 @@ class OpenstackCloud:
             name = node['name']
             enterprise_node = next(filter(lambda x: name == x['name'], enterprise['nodes']))
             nova_instance = self.nova_sess.servers.get(id_value)
-            print(f"Addresses = {nova_instance.addresses}")
             network_name = self.cloud_config['external_network']
 
             address_list = []

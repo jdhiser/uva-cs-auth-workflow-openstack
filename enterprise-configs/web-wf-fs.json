@@ -1,0 +1,55 @@
+{
+	"nodes":
+	[
+		{ 
+			"name": "dc1",
+			"os": "win2k22",
+			"domain": "castle",
+			"roles": [ "domain_controller_leader", "windows" ]
+		},
+		{
+			"name": "dc2" ,
+			"os": "win2k22",
+			"domain": "castle",
+			"roles": [ "domain_controller", "windows" ]
+		},
+		{
+			"name": "identity",
+			"os": "Jammy-IdP",
+			"domain": "castle",
+			"roles": [ "idp", "linux" ]
+		},
+		{
+			"name": "service" ,
+			"os": "Jammy-SP",
+			"domain": "castle",
+			"roles": [ "sp", "linux" ]
+		},
+		{
+			"name": "fs" ,
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "linux", "fs" ]
+		},
+		{
+			"name": "compute" ,
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "shared" ]
+		},
+		{
+			"name": "linep1",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		},
+		{
+			"name": "linep2",
+			"os": "jammy",
+			"domain": "castle",
+			"roles": [ "endpoint", "linux", "personal" ],
+			"user": "standard user"
+		}
+	]
+}
