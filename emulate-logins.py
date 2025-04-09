@@ -33,14 +33,16 @@ timestamp_format = '%Y-%m-%d %H:%M:%S.%f'
 
 file_lock = threading.Lock()
 
+
 # ndjson format
 def record_log(logfile, new_record):
     json_line = json.dumps(new_record)
-         
+
     with file_lock:  # Acquire the lock
         with open(logfile, 'a') as file:
             file.write(json_line + '\n')
             file.flush()
+
 
 def emulate_login(number, login, user_data, built, seed, logfile):
 
@@ -149,7 +151,7 @@ def emulate_login(number, login, user_data, built, seed, logfile):
         pass
 
     new_output = {"cmd": cmd, "stdout": [stdout, stdout2], "stderr": [
-                         stderr, stderr2], "login": login, "exit_status": [exit_status, exit_status2]}
+        stderr, stderr2], "login": login, "exit_status": [exit_status, exit_status2]}
 
     # dump to log as ssh sessions complete
     if logfile:
@@ -185,10 +187,11 @@ def get_earliest_login(logins):
     earliest = datetime.now()
     for day in days:
         for user in days[day]:
-           login_start = datetime.strptime(days[day][user][0]['login_start'], timestamp_format)
-           if earliest > login_start:
-               earliest = login_start
+            login_start = datetime.strptime(days[day][user][0]['login_start'], timestamp_format)
+            if earliest > login_start:
+                earliest = login_start
     return earliest
+
 
 def flatten_logins(logins, rebase_time=False):
 
@@ -211,9 +214,10 @@ def flatten_logins(logins, rebase_time=False):
                     rebased_login_end = login_end + rebase_delta
                     index['login_start'] = str(rebased_login_start)
                     index['login_end'] = str(rebased_login_end)
-            
+
             flat_logins += days[day][user]
     return flat_logins
+
 
 def schedule_logins(logins_file, setup_output_file, logfile=None, fast_debug=False, seed=None, rebase_time=False):
     global nowish
@@ -233,7 +237,7 @@ def schedule_logins(logins_file, setup_output_file, logfile=None, fast_debug=Fal
             seed = random.randint(0, 10000)
 
     print(f"At {datetime.now()} - starting seed: {seed}")
-   
+
     number = 0
     for login in flat_logins:
         # Make sure each workflow gets a different (yet deterministic) seed
@@ -248,7 +252,7 @@ def schedule_logins(logins_file, setup_output_file, logfile=None, fast_debug=Fal
         job_start = datetime.strptime(job_start, '%Y-%m-%d %H:%M:%S.%f')
         if fast_debug:
             emulate_login(number=number, login=login, user_data=users,
-                    built=setup_output_file['enterprise_built'], seed=seed, logfile=logfile)
+                          built=setup_output_file['enterprise_built'], seed=seed, logfile=logfile)
         else:
             scheduler.add_job(emulate_login, 'date', run_date=job_start, kwargs={
                 'number': number, 'login': login, 'user_data': users, 'built': setup_output_file['enterprise_built'], 'seed': seed, 'logfile': logfile})
@@ -265,7 +269,6 @@ def main():
     parser.add_argument("--seed", type=int, help="Specify a seed value")
     parser.add_argument("--logfile", type=str, help="Log output file", default=f"workflow.{emulation_start_time.isoformat()}.log")
     parser.add_argument("--rebase-time", action='store_true', help="Rebase timestamps from logins.json", default=False)
-
 
     args = parser.parse_args()
 

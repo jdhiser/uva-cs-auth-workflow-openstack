@@ -245,12 +245,12 @@ def main():
     days_to_simulate = 10
 
     parser = argparse.ArgumentParser(description="Process JSON files for deployment.")
-    
+
     # Positional arguments
     parser.add_argument('user_roles', help="Path to user-roles.json")
     parser.add_argument('enterprise', help="Path to enterprise.json")
     parser.add_argument('post_deploy_output', nargs='?', help="Optional path to post-deploy-output.json")
-    
+
     # Optional argument --seed
     parser.add_argument('--seed', type=int, help="Optional seed value for random operations")
 
