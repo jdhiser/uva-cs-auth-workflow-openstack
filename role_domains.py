@@ -1,12 +1,13 @@
 import time
 import socket
 import paramiko
+import role_fs
 from shell_handler import ShellHandler
 # from password import generate_password
 
 
 domain_safe_mode_password = 'hello!321'  # generate_password(12)
-verbose = True
+verbose = False
 
 
 def deploy_forest(cloud_config, name, control_ipv4_addr, game_ipv4_addr, password, domain):
@@ -24,6 +25,11 @@ def deploy_forest(cloud_config, name, control_ipv4_addr, game_ipv4_addr, passwor
         "net stop w32time; "
         "net start w32time; "
         "w32tm /resync /force; "
+        "w32tm /config /manualpeerlist:\"time.google.com 0.pool.ntp.org 1.pool.ntp.org\" /syncfromflags:manual /reliable:yes /update ;"
+        "net stop w32time ;"
+        "net start w32time ;"
+        "w32tm /resync ;"
+        "w32tm /query /status ;"
         "Install-windowsfeature AD-domain-services ; "
         "Import-Module ADDSDeployment ;  "
         "$secure=ConvertTo-SecureString -asplaintext -string {} -force ; "
@@ -128,6 +134,11 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
         "net stop w32time; "
         "net start w32time; "
         "w32tm /resync /force; "
+        "w32tm /config /manualpeerlist:\"time.google.com 0.pool.ntp.org 1.pool.ntp.org\" /syncfromflags:manual /reliable:yes /update ;"
+        "net stop w32time ;"
+        "net start w32time ;"
+        "w32tm /resync ;"
+        "w32tm /query /status ;"
         "Install-windowsfeature AD-domain-services ; "
         "Import-Module ADDSDeployment ;  "
         "Set-DnsClientServerAddress -serveraddress ('{}') -interfacealias 'game-adapter' ; "
@@ -260,7 +271,7 @@ def join_domain(obj):
         return join_domain_windows(name, leader_admin_password, control_ipv4_addr, game_ipv4_addr, domain_ips, fqdn_domain_name, domain_name, password)
     elif islinux:
         print("Linux join-domain for node " + name)
-        return join_domain_linux(name, leader_admin_password, control_ipv4_addr, game_ipv4_addr, domain_ips, fqdn_domain_name, domain_name, password, enterprise_name)
+        return join_domain_linux(obj, name, leader_admin_password, control_ipv4_addr, game_ipv4_addr, domain_ips, fqdn_domain_name, domain_name, password, enterprise_name)
     else:
         errstr = "  No endpoint/domain enrollment for node " + name
         raise RuntimeError(errstr)
@@ -333,75 +344,128 @@ def join_domain_windows(name, leader_admin_password, control_ipv4_addr, game_ipv
     }
 
 
-def join_domain_linux(name, leader_admin_password, control_ipv4_addr, game_ipv4_addr, domain_ips, fqdn_domain_name, domain_name, password, enterprise_name):
+def join_domain_linux(obj, name, leader_admin_password, control_ipv4_addr, game_ipv4_addr, domain_ips, fqdn_domain_name, domain_name, password, enterprise_name):
     netplan_config_path = '/etc/netplan/50-cloud-init.yaml'
     chrony_config_path = '/etc/chrony/chrony.conf'
     domain_ips_formated = str(domain_ips).replace('[', '').replace(']', '').replace('"', '')
     krdb_config_path = '/etc/krb5.conf'
 
-    set_allow_password = (
-        "set -x ; ip a ; ping -c 3 google.com; ping -c 3 nova.clouds.archive.ubuntu.com ;  "
-        "sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/'  /etc/ssh/sshd_config; "
-        "sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/'  /etc/ssh/sshd_config; "
-        "sudo sed -i 's/#PasswordAuthentication /PasswordAuthentication /'  /etc/ssh/sshd_config; "
-        "sudo sed -i 's/KbdInteractiveAuthentication no/KbdInteractiveAuthentication yes/'  /etc/ssh/sshd_config; "
-        "sudo rm /etc/ssh/sshd_config.d/60-cloudimg-settings.conf "
-    )
+    cmd = f"""
+bash << 'EOT' 2>&1 | sudo tee -a /var/log/join_domain.log
+set -x
 
-    set_dns_command = (
-        "sudo sed -i '/dhcp4: true/a \            nameservers:\\n                addresses: \[ {} \]' {} ;  "
-        "cat {}; sudo netplan apply ; echo Hostname=$(hostname); sudo resolvectl status  "
-    ).format(domain_ips_formated, netplan_config_path, netplan_config_path)
+# gather IP and network connectivity.
+ip a
+ping -c 3 google.com
+ping -c 3 nova.clouds.archive.ubuntu.com
 
-    install_packages_cmd = "sudo apt update && sudo env DEBIAN_FRONTEND=noninteractive apt install -y dnsutils iputils-ping traceroute telnet tcpdump python-is-python3 chrony krb5-user realmd sssd sssd-tools adcli samba-common-bin"
+# set up ssh password to be allowed.
+sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/'  /etc/ssh/sshd_config
+sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/'  /etc/ssh/sshd_config
+sudo sed -i 's/#PasswordAuthentication /PasswordAuthentication /'  /etc/ssh/sshd_config
+sudo sed -i 's/KbdInteractiveAuthentication no/KbdInteractiveAuthentication yes/'  /etc/ssh/sshd_config
+sudo rm /etc/ssh/sshd_config.d/60-cloudimg-settings.conf
 
-    set_chrony_command = (
-        "sudo timedatectl set-timezone America/New_York; " +
-        "sudo sed -i '/pool ntp.ubuntu.com        iburst maxsources 4/i pool {}        iburst maxsources 5' {} ; ".format(fqdn_domain_name, chrony_config_path) +
-        "sudo systemctl enable chrony ; " +
-        "sudo systemctl restart chrony; " +
-        "while ! sudo chronyc tracking|grep 'Leap status     : Normal'; do echo waiting for chrony to sync time; sleep 1; done "
-    )
+# setup DNS for domain join.
+sudo sed -i '/dhcp4: true/a \            nameservers:\\n                addresses: \[ {domain_ips_formated} \]' {netplan_config_path}
 
-    krb5_cmd = (
-        f"sudo sed -i 's/default_realm = .*/default_realm = {enterprise_name.upper()}/' {krdb_config_path} ; " +
-        f"sudo sed -i '/\\[libdefaults\\]/a \  rdns=false ' {krdb_config_path} ;  " +
-        f"count=1 ; while (( count < 300 )) ; do echo {leader_admin_password} | sudo kinit administrator@{fqdn_domain_name.upper()};  " +
-        "res=${PIPESTATUS[1]} ; if (( res == 0 )) ; then break; fi ; echo waiting for kinit to succeed; " +
-        "sudo netplan apply; sleep 30;  count=$(( count + 1 )) ; done ; " +
-        "sudo klist "
-    )
+# gather output for sanity check.
+cat {netplan_config_path}
+sudo netplan apply
+echo Hostname=$(hostname)
+sudo resolvectl status
 
-    realm_cmd = (
-        "count=1 ; while (( count < 300 )) ; do " +
-        f"sudo realm discover {fqdn_domain_name};" +
-        "res=$?; if (( res == 0 )); then break; fi; echo 'Waiting for realm discover to succeed'; sleep 30s; done; " +
-        "count=1 ; while (( count < 300 )) ; do " +
-        f"echo {leader_admin_password}| sudo realm join -U administrator {fqdn_domain_name.upper()}  -v;" +
-        "res=${PIPESTATUS[1]};  if (( res == 0 )); then break; fi; echo 'Waiting for realm join to succeed'; sleep 30s ; done " 
-    )
+# install packages.
+sudo apt update
+sudo env DEBIAN_FRONTEND=noninteractive apt install -y dnsutils iputils-ping traceroute telnet tcpdump python-is-python3 chrony krb5-user realmd sssd sssd-tools adcli samba-common-bin
 
-    cmds = '(' + set_allow_password + ';' + set_dns_command + ';' + install_packages_cmd + ';' + \
-        set_chrony_command + ';' + krb5_cmd + ';' + realm_cmd + ') 2>&1 | sudo tee /var/log/join_domain.log '
+
+# set time/date to eastern and make sure it's right.
+sudo timedatectl set-timezone America/New_York
+sudo sed -i '/pool ntp.ubuntu.com        iburst maxsources 4/i pool {fqdn_domain_name}        iburst maxsources 5' {chrony_config_path}
+sudo systemctl enable chrony
+sudo systemctl restart chrony
+
+while ! sudo chronyc tracking|grep 'Leap status     : Normal'
+do
+    echo waiting for chrony to sync time
+    sleep 1
+done
+
+# set up default realm to join domain
+sudo sed -i 's/default_realm = .*/default_realm = {enterprise_name.upper()}/' {krdb_config_path}
+sudo sed -i '/\\[libdefaults\\]/a \  rdns=false ' {krdb_config_path}
+
+#  try repeatedly to join the domain.  need to do this in case the domain controller is still starting.
+count=1
+while (( count < 30 ))
+do
+    echo {leader_admin_password} | sudo kinit administrator@{fqdn_domain_name.upper()}
+    res=${'{'}PIPESTATUS[1]{'}'}
+    if (( res == 0 ))
+    then
+        break
+    fi
+    echo waiting for kinit to succeed
+    sudo netplan apply
+    sleep 30
+    (( count++ ))
+done
+
+# gather domain info.
+sudo klist
+
+count=1
+while (( count < 30 ))
+do
+        sudo realm discover {fqdn_domain_name}
+        res=$?
+        if (( res == 0 ))
+        then
+            break
+        fi
+        echo 'Waiting for realm discover to succeed'
+        sleep 30s
+        (( count++ ))
+done
+
+count=1
+while (( count < 30 ))
+do
+        echo {leader_admin_password}| sudo realm join -U administrator {fqdn_domain_name.upper()}  -v
+        res=${'{'}PIPESTATUS[1]{'}'}
+        if (( res == 0 ))
+        then
+            break
+        fi
+        echo 'Waiting for realm join to succeed'
+        sleep 30s
+        (( count++ ))
+done
+
+sudo systemctl restart sshd sssd realmd dbus chronyd
+"""
 
     shell = ShellHandler(control_ipv4_addr, 'ubuntu', None)
-    stdout, stderr, exit_status = shell.execute_cmd(cmds, verbose=verbose)
+    stdout, stderr, exit_status = shell.execute_cmd(cmd, verbose=verbose)
 
-    shell.execute_cmd("sudo reboot now", verbose=verbose)
+#    shell.execute_cmd("sudo reboot now", verbose=verbose)
+#
+#    print(
+#        f"  Waiting for reboot of {name} linux domain member with ip={control_ipv4_addr}(Expect socket closed by peer messages).")
 
-    print(
-        f"  Waiting for reboot of {name} linux domain member with ip={control_ipv4_addr}(Expect socket closed by peer messages).")
+    # wait for services to stabilize.
     time.sleep(5)
     status_received = False
     attempts = 0
     stdout2 = None
     stderr2 = None
     exit_status2 = None
-    while not status_received and attempts < 300:
+    while not status_received and attempts < 30:
         attempts += 1
         try:
             admin_user = 'administrator@' + fqdn_domain_name
-            print("  Trying to verify reboot of {}... creds={}:{}:{}".format(
+            print("  Trying to verify domain-join of {}... creds={}:{}:{}".format(
                 name, control_ipv4_addr, admin_user, leader_admin_password))
             shell = ShellHandler(control_ipv4_addr, admin_user, leader_admin_password)
             stdout2, stderr2, exit_status2 = shell.execute_cmd('sudo netplan apply; realm list', verbose=verbose)
@@ -410,14 +474,12 @@ def join_domain_linux(name, leader_admin_password, control_ipv4_addr, game_ipv4_
             else:
                 status_received = True
         except paramiko.ssh_exception.SSHException:
-            print("  Waiting for reboot of linux domain member, {}, with ip={}(Expect socket closed by peer messages).".format(
-                name, control_ipv4_addr))
+            print(f"  Waiting domain join to complete for ip={control_ipv4_addr}(Expect socket closed by peer messages).")
 
             time.sleep(5)
             pass
         except paramiko.ssh_exception.NoValidConnectionsError:
-            print("  Waiting for reboot of linux domain member, {} with ip={}(Expect socket closed by peer messages).".format(
-                name, control_ipv4_addr))
+            print(f"  Waiting for domain join to complete for {name} with ip={control_ipv4_addr}(Expect socket closed by peer messages ")
             time.sleep(5)
             pass
 
@@ -441,7 +503,8 @@ def join_domain_linux(name, leader_admin_password, control_ipv4_addr, game_ipv4_
     print(f"  Reboot Completed for {name} by verifying computer is in the domain")
 
     return {
-        "join_domain": {"join-cmd": cmds, "stdout": stdout, "stderr": stderr, "exit_status": exit_status},
+        "mount_home_dirs": role_fs.mount_home_directories_linux(obj),
+        "join_domain": {"join-cmd": cmd, "stdout": stdout, "stderr": stderr, "exit_status": exit_status},
         "verify_join_domain": {"stdout": stdout2, "stderr": stderr2, "exit_status": exit_status2}
     }
 

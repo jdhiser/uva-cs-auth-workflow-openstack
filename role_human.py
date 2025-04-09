@@ -6,7 +6,6 @@ verbose = False
 human_plugin_version = "Downloads/pyhuman-moodle-with-web.zip"
 
 
-
 def node_to_default_user(node):
     user = ""
     if 'windows' in node['roles']:

@@ -1,8 +1,8 @@
 import argparse
 import pandas as pd
 import json
-import math
 from datetime import datetime
+
 
 # Helper function to compute bin number based on time period T
 def compute_bin(timestamp, start_time, bin_period):
@@ -52,14 +52,16 @@ def process_file(input_file, bin_period):
 
     return grouped
 
+
 def calculate_bin_statistics(dfs):
     # Concatenate all DataFrames
     combined_df = pd.concat(dfs, ignore_index=True)
-    
+
     # Group by "bin" and calculate mean and stddev for "count"
     stats = combined_df.groupby('bin')['cumulative_count'].agg(['mean', 'std']).reset_index()
 
     return stats
+
 
 def main():
     parser = argparse.ArgumentParser(description="Bin and analyze NDJSON files by time intervals.")
@@ -69,11 +71,11 @@ def main():
 
     args = parser.parse_args()
 
-    dfs = [] 
+    dfs = []
     for file in args.input_files:
         df = process_file(file, args.time_period)
         for index, row in df.iterrows():
-           print(row)
+            print(row)
         dfs.append(df)
 
     # Example usage

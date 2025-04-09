@@ -29,7 +29,7 @@
 			"name": "fs" ,
 			"os": "jammy",
 			"domain": "castle",
-			"roles": [ "linux", "fs" ]
+			"roles": [ "linux", "fileserver" ]
 		},
 		{
 			"name": "compute" ,

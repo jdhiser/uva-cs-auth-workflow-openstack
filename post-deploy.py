@@ -8,6 +8,7 @@ import role_register
 import role_domains
 import role_human
 import role_moodle
+import role_fs
 import argparse
 from datetime import datetime
 from joblib import Parallel, delayed
@@ -295,10 +296,49 @@ def deploy_domain_controllers(cloud_config, enterprise, enterprise_built, only):
     return ret
 
 
+def setup_fileservers(cloud_config, enterprise, enterprise_built, only):
+    ret = {}
+    access_list = []
+    nodes = list(filter(lambda x: 'fileserver' in x['roles'], enterprise['nodes']))
+    nodes = [x for x in nodes if only is None or x['name'] in only]
+    leader_details = enterprise_built['setup']['setup_domains']['domain_leaders']
+    for node in nodes:
+        name = node['name']
+        domain = node['domain']
+        if domain is None:
+            print("No domain (" + str(domain) + ") to join for " + name)
+            continue
+        print("Joining domain on " + name)
+        control_ipv4_addr, game_ipv4_addr, password = extract_creds(enterprise_built, name)
+        access_list.append({
+            "cloud_config": cloud_config,
+            "node": node,
+            "domain_leader": leader_details[domain],
+            "control_addr": control_ipv4_addr,
+            "game_addr": game_ipv4_addr,
+            "password": str(password),
+            'domain': domain
+        })
+
+    if use_parallel:
+        # parallel
+        results = Parallel(n_jobs=10, backend="threading")(delayed(role_fs.setup_fileserver)(access) for access in access_list)
+    else:
+        # sequential
+        results = []
+        for access in access_list:
+            results.append(role_fs.setup_fileserver(access))
+
+    ret['join_domains'] = results
+
+    return ret
+
+
 def setup_enterprise(cloud_config, to_build, built, only):
     built['setup'] = {}
     built['setup']['windows_register'] = register_windows(to_build, built, only)
     built['setup']['setup_domains'] = deploy_domain_controllers(cloud_config, to_build, built, only)
+    built['setup']['setup_fileservers'] = setup_fileservers(cloud_config, to_build, built, only)
     built['setup']['join_domains'] = join_domains(cloud_config, to_build, built, only)
     built['setup']['deploy_human'] = deploy_human(cloud_config, to_build, built, only)
     built['setup']['setup_moodle_idps'] = setup_moodle_idps(cloud_config, to_build, built, only)
