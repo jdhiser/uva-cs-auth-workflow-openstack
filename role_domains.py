@@ -354,6 +354,8 @@ def join_domain_linux(obj, name, leader_admin_password, control_ipv4_addr, game_
 bash << 'EOT' 2>&1 | sudo tee -a /var/log/join_domain.log
 set -x
 
+sudo hostnamectl set-hostname {name}.{fqdn_domain_name} --static
+
 # gather IP and network connectivity.
 ip a
 ping -c 3 google.com

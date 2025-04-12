@@ -4,7 +4,7 @@ from shell_handler import ShellHandler
 # from password import generate_password
 
 
-verbose = True
+verbose = False
 
 
 def setup_fileserver(obj):
@@ -188,39 +188,8 @@ def mount_home_directories_linux(obj):
 bash << 'EOT' 2>&1 | sudo tee -a /var/log/mount_fileserver.log
 set -x
 ## install and configure autofs/cifs
-sudo apt update && sudo env DEBIAN_FRONTEND=noninteractive apt install autofs cifs-utils smbclient -y
+sudo apt update && sudo env DEBIAN_FRONTEND=noninteractive apt install cifs-utils smbclient libpam-mount -y
 
-sudo tee /etc/auto.master << 'EOF'
-/home/{fqdn_domain_name.lower()} /etc/auto.home.sh --timeout=300 --ghost
-EOF
-
-sudo tee /etc/auto.home.sh << 'EOF'
-#!/bin/bash
-# Usage: /etc/auto.home.sh <username>
-USER="$1"
-
-
-
-echo "checking user, USER=$USER" >> /tmp/automount.log
-if getent -s files passwd "$USER" >/dev/null 2>&1
-then
-        echo "Skipping local user, USER=$USER" >> /tmp/automount.log
-        exit 0  # Skip mounting for local users
-fi
-
-# Get UID and GID from SSSD
-myUID=$(id -u "$USER" 2>/dev/null)
-myGID=$(id -g "$USER" 2>/dev/null)
-
-
-echo "Detected domain user: USER=$USER, UID=$myUID, GID=$myGID" >> /tmp/automount.log
-# Exit if user not found
-[ -z "$myUID" ] && exit 1
-
-# Define mount options
-echo -fstype=cifs,vers=3.1.1,rw,sec=krb5,cruid=$myUID,noserverino,uid=$myUID,gid=$myGID,file_mode=0700,dir_mode=0700 ://{fs_name}.{fqdn_domain_name.lower()}/$USER
-
-EOF
 
 
 ## Update sssd to use home dirs.
@@ -232,6 +201,9 @@ sudo tee /etc/sssd/sssd.conf << EOF
 domains = {fqdn_domain_name.lower()}
 config_file_version = 2
 services = nss, pam
+
+[pam]
+krb5_ccache_type = FILE
 
 [domain/{fqdn_domain_name.lower()}]
 default_shell = /bin/bash
@@ -246,6 +218,7 @@ id_provider = ad
 override_homedir = /home/%d/%u
 fallback_homedir = /home/%d/%u
 ad_domain = {fqdn_domain_name.lower()}
+ad_hostname = {name}.{fqdn_domain_name.lower()}
 use_fully_qualified_names = False
 ldap_id_mapping = True
 access_provider = ad
@@ -262,61 +235,10 @@ session optional                        pam_umask.so
 session required                        pam_unix.so
 session optional                        pam_sss.so
 session optional                        pam_systemd.so
-session optional                        pam_exec.so /usr/local/bin/wait_for_home.sh
+session optional                        pam_mount.so
 EOF
 
 
-
-sudo tee /usr/local/bin/wait_for_home.sh << 'EOF'
-#!/bin/bash
-
-show_message()
-{'{'}
-        logger -t "wait_for_home" "$1"
-        echo -e "\nlogger: $1" >> /tmp/wait_for_home.log
-{'}'}
-
-main()
-{'{'}
-
-        # Get the username from PAM
-        if [[ ! -z $PAM_USER ]]
-        then
-                USERNAME="$PAM_USER"
-                # Fetch the home directory from /etc/passwd or SSSD/LDAP
-                HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
-        else
-                USERNAME=$USER
-        fi
-
-        if [[ $HOME != /home/castle* ]];
-        then
-                show_message "[ $(date) ] Skipping home dir check for local user."
-                exit 0
-        fi
-        # Trigger autofs mount by accessing $HOME
-        ls "$HOME" >/dev/null 2>&1
-        # Wait until mounted (check every 1 second, timeout after 30 seconds)
-        local timeout=30
-        while [[ $timeout -gt 0 && ! -d "$HOME" ]]; do
-                show_message "[ $(date) ] Waiting for home directory to mount."
-                sleep 5
-                ((timeout--))
-        done
-
-        if [[  -d "$HOME" ]]
-        then
-                show_message "[ $(date) ] Home directory successfully mounted."
-                cd $HOME
-                exit 0
-        else
-                show_message "[ $(date) ] Home directory not mounted, timed out."
-                exit 1
-        fi
-{'}'}
-
-main "$@"
-EOF
 
 
 sudo tee /etc/samba/smb.conf << 'EOF'
@@ -352,34 +274,51 @@ sudo tee /etc/krb5.conf << 'EOF'
     ticket_lifetime = 24h
     renew_lifetime = 7d
     forwardable = true
-    default_ccache_name = KEYRING:persistent:%{'{'}uid{'}'}
-
+    # default_ccache_name = KEYRING:persistent:%{'{'}uid{'}'}
+    default_ccache_name = FILE:/tmp/krb5cc_%{'{'}uid{'}'}
     fcc-mit-ticketflags = true
     udp_preference_limit = 0
 EOF
 
 
-sudo chmod +x /usr/local/bin/wait_for_home.sh
-sudo chmod +x /etc/auto.home.sh
 echo {leader_admin_password} | kinit administrator@{fqdn_domain_name.upper()}
 
 
 
 # trace cifs.upcall for cert. validation:
 
-if [[ ! -e /usr/sbin/cifs.upcall.real ]]
-then
-    sudo mv /usr/sbin/cifs.upcall /usr/sbin/cifs.upcall.real
-    sudo tee /usr/sbin/cifs.upcall <<EOF
-#!/bin/bash
-echo "\$@" >> /tmp/cifs.upcall.debug.log
-export KRB5_TRACE=/tmp/krb5.trace.log.$$
-exec /usr/sbin/cifs.upcall.real "\$@"
-EOF
-    sudo chmod +x /usr/sbin/cifs.upcall
-fi
 
-sudo systemctl restart autofs sssd
+sudo python3 -c "
+import xml.etree.ElementTree as ET
+f = '/etc/security/pam_mount.conf.xml'
+t = ET.parse(f)
+r = t.getroot()
+ET.SubElement(r, 'volume', {'{'}
+    'user': '*',
+    'sgrp': 'domain users',
+    'fstype': 'cifs',
+    'server': '{fs_name}.{fqdn_domain_name}',
+    'path': '%(DOMAIN_USER)',
+    'mountpoint': '/home/{fqdn_domain_name}/%(DOMAIN_USER)',
+    'options': 'sec=krb5,cruid=%(USERUID),vers=3.1.1,uid=%(USERUID),gid=%(USERGID),noserverino'
+{'}'})
+t.write(f)
+"
+
+
+#if [[ ! -e /usr/sbin/cifs.upcall.real ]]
+#then
+#    sudo mv /usr/sbin/cifs.upcall /usr/sbin/cifs.upcall.real
+#    sudo tee /usr/sbin/cifs.upcall <<'EOF'
+##!/bin/bash
+#echo "$@" >> /tmp/cifs.upcall.debug.log
+#export KRB5_TRACE=/tmp/krb5.trace.log.$$
+#exec /usr/sbin/cifs.upcall.real "$@"
+#EOF
+#    sudo chmod +x /usr/sbin/cifs.upcall
+#fi
+
+sudo systemctl restart  sssd
 EOT
     """
 
