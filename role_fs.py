@@ -173,24 +173,23 @@ def mount_home_directories_linux(obj):
     fqdn_domain_name = domain_name + '.' + enterprise_name
     leader = obj['domain_leader']
     leader_admin_password = leader['admin_pass']
-    # game_leader_addrs = leader['game_addr']
     control_ipv4_addr = obj['control_addr']
-    # game_ipv4_addr = obj['game_addr']
-    # password = obj['password']
-    # roles = node['roles']
-    # islinux = len(list(filter(lambda role: 'linux' == role, roles))) == 1
-    fs_name = "fs"
 
-    print(f"Setting up home directory mounts on {name} with admin_password={leader_admin_password}");
+    if 'name' not in leader['fileserver']:
+        print(f"Skipping home directdory setup on {name}, as no fileserver for domain")
+        return
+
+    # extract the fileserver name
+    fs_name = leader['fileserver']['name']
+
+    print(f"Setting up home directory mounts on {name} with admin_password={leader_admin_password}")
 
     cmd = f"""
 
 bash << 'EOT' 2>&1 | sudo tee -a /var/log/mount_fileserver.log
 set -x
-## install and configure autofs/cifs
+## install and configure libpam-mount/cifs
 sudo apt update && sudo env DEBIAN_FRONTEND=noninteractive apt install cifs-utils smbclient libpam-mount -y
-
-
 
 ## Update sssd to use home dirs.
 
@@ -280,14 +279,9 @@ sudo tee /etc/krb5.conf << 'EOF'
     udp_preference_limit = 0
 EOF
 
-
 echo {leader_admin_password} | kinit administrator@{fqdn_domain_name.upper()}
 
-
-
 # trace cifs.upcall for cert. validation:
-
-
 sudo python3 -c "
 import xml.etree.ElementTree as ET
 f = '/etc/security/pam_mount.conf.xml'

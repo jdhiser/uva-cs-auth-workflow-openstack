@@ -301,10 +301,11 @@ def setup_fileservers(cloud_config, enterprise, enterprise_built, only):
     access_list = []
     nodes = list(filter(lambda x: 'fileserver' in x['roles'], enterprise['nodes']))
     nodes = [x for x in nodes if only is None or x['name'] in only]
-    leader_details = enterprise_built['setup']['setup_domains']['domain_leaders']
     for node in nodes:
         name = node['name']
         domain = node['domain']
+        enterprise_built['setup']['setup_domains']['domain_leaders'][domain]['fileserver'] = node
+        leader_details = enterprise_built['setup']['setup_domains']['domain_leaders']
         if domain is None:
             print("No domain (" + str(domain) + ") to join for " + name)
             continue
