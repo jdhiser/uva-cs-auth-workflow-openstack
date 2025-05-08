@@ -53,28 +53,31 @@ def deploy_forest(cloud_config, name, control_ipv4_addr, game_ipv4_addr, passwor
     except socket.error:
         pass
 
-    print("  Waiting for reboot of domain controller leader with ip={} (Expect socket closed by peer messages).".format(control_ipv4_addr))
     time.sleep(10)
     status_received = False
     attempts = 0
     while not status_received and attempts < 60:
         try:
             attempts += 1
+            print("  Waiting for reboot of domain controller leader with ip={} (Expect socket closed by peer messages).".format(control_ipv4_addr))
             shell = ShellHandler(control_ipv4_addr, user, password)
             stdout2, stderr2, exit_status2 = shell.execute_powershell("get-addomain", verbose=verbose)
-            if 'Attempting to perform the' in str(stdout2) + str(stderr2):
+            output = str(stdout2) + str(stderr2)
+            if f'DNSRoot                            : {domain_name}' not in output:
+                print("  Connected, but did not get domain info.  Trying again...")
                 # server is starting up, try again.
                 status_received = False
                 time.sleep(10)
             else:
+                print("  Success:  Domain detected!")
                 status_received = True
-        except paramiko.ssh_exception.SSHException:
-            time.sleep(10)
-            pass
-        except paramiko.ssh_exception.NoValidConnectionsError:
-            time.sleep(10)
-            pass
-        except ConnectionResetError:
+        except (
+            paramiko.ssh_exception.SSHException,
+            paramiko.ssh_exception.NoValidConnectionsError,
+            ConnectionResetError,
+            TimeoutError
+        ) as e:
+            print(f"  Exception {type(e).__name__} detected, trying again...")
             time.sleep(10)
             pass
 
@@ -181,7 +184,7 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
         # stop if successful
         if 'A domain controller could not be contacted' not in str(stderr2) and 'A domain controller could not be contacted' not in str(stdout2):
             break
-        print("Domain controler registration failed, rebooting and retrying (Expect socket error messages)")
+        print("  Domain controler registration failed, rebooting and retrying (Expect socket error messages)")
         # print(str(stdout2 + stderr2))
         shell.execute_powershell('Restart-computer -force', verbose=verbose)
         time.sleep(60)
@@ -214,10 +217,12 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
             stdout.append(stdout2)
             stderr.append(stderr2)
             exit_status.append(exit_status2)
-        except paramiko.ssh_exception.SSHException:
-            time.sleep(10)
-            pass
-        except paramiko.ssh_exception.NoValidConnectionsError:
+        except (
+            paramiko.ssh_exception.SSHException,
+            paramiko.ssh_exception.NoValidConnectionsError,
+            TimeoutError
+        ) as e:
+            print(f"  SSH exception {type(e).__name__}handled, retrying...")
             time.sleep(10)
             pass
 
@@ -418,43 +423,61 @@ done
 sudo klist
 
 count=1
-while (( count < 30 ))
+while (( count < 60 ))
 do
         sudo realm discover {fqdn_domain_name}
         res=$?
-        if (( res == 0 ))
-        then
-            break
-        fi
-        echo 'Waiting for realm discover to succeed'
-        sleep 30s
-        (( count++ ))
-done
 
-count=1
-while (( count < 30 ))
-do
+        # verify that
+        if (( res != 0 ))
+        then
+            echo 'Waiting for realm discover to succeed'
+            sleep 30s
+            (( count++ ))
+            continue
+        fi
+
         echo {leader_admin_password}| sudo realm join -U administrator {fqdn_domain_name.upper()}  -v
         res=${'{'}PIPESTATUS[1]{'}'}
-        if (( res == 0 ))
+        if (( res != 0 ))
         then
-            break
+            echo 'Waiting for realm join to succeed'
+            sleep 30s
+            (( count++ ))
+            continue
         fi
-        echo 'Waiting for realm join to succeed'
-        sleep 30s
-        (( count++ ))
+
+        echo "Realm discover and join successful. Sanity checking realm"
+        realm list
+        break
+
 done
 
-sudo systemctl restart sshd sssd realmd dbus chronyd
+sudo systemctl restart sshd sssd realmd chronyd
+
+attempts=0
+while (( attempts < 50 ))
+do
+    if sudo apt update; then
+        echo "apt update succeeded after $((attempts+1)) attempt(s)."
+        break
+    fi
+    echo "Attempt $((attempts+1)) failed. Retrying..."
+    sudo netplan apply
+    sleep 5
+    ((attempts++))
+done
+
+if (( attempts == 50 )); then
+    echo "apt update failed after 50 attempts."
+    exit 1
+fi
+
+EOT
 """
 
     shell = ShellHandler(control_ipv4_addr, 'ubuntu', None)
     stdout, stderr, exit_status = shell.execute_cmd(cmd, verbose=verbose)
-
-#    shell.execute_cmd("sudo reboot now", verbose=verbose)
-#
-#    print(
-#        f"  Waiting for reboot of {name} linux domain member with ip={control_ipv4_addr}(Expect socket closed by peer messages).")
 
     # wait for services to stabilize.
     time.sleep(5)
@@ -472,16 +495,17 @@ sudo systemctl restart sshd sssd realmd dbus chronyd
             shell = ShellHandler(control_ipv4_addr, admin_user, leader_admin_password)
             stdout2, stderr2, exit_status2 = shell.execute_cmd('sudo netplan apply; realm list', verbose=verbose)
             if not 'realm-name: {}'.format(fqdn_domain_name.upper()) in str(stdout2):
+                print(f"  Realm list did not return fqdn ({fqdn_domain_name}), retrying.")
                 time.sleep(5)
             else:
                 status_received = True
         except paramiko.ssh_exception.SSHException:
-            print(f"  Waiting domain join to complete for ip={control_ipv4_addr}(Expect socket closed by peer messages).")
+            print(f"  Waiting domain join to complete for ip={control_ipv4_addr}.")
 
             time.sleep(5)
             pass
         except paramiko.ssh_exception.NoValidConnectionsError:
-            print(f"  Waiting for domain join to complete for {name} with ip={control_ipv4_addr}(Expect socket closed by peer messages ")
+            print(f"  Waiting for domain join to complete for {name} with ip={control_ipv4_addr}.")
             time.sleep(5)
             pass
 

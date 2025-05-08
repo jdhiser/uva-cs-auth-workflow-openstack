@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-
+import logging
 import traceback
 import sys
 import json
@@ -150,7 +150,7 @@ def setup_moodle_idps(cloud_config, enterprise, enterprise_built, only):
         if domain is None:
             print("No domain for IDP {} to configure against".format(name))
             continue
-        print("Configuring IDP against domain on " + name)
+        print("Initial setup of IDP against domain on " + name)
         control_ipv4_addr, game_ipv4_addr, password = extract_creds(enterprise_built, name)
         access_list.append({
             "node": node,
@@ -226,7 +226,7 @@ def setup_moodle_idps_part2(cloud_config, enterprise, enterprise_built, only):
         if domain is None:
             print("No domain for IDP {} to configure against".format(name))
             continue
-        print("Configuring IDP against domain on " + name)
+        print("Final setup of IDP against domain on " + name)
         control_ipv4_addr, game_ipv4_addr, password = extract_creds(enterprise_built, name)
         access_list.append({
             "node": node,
@@ -354,6 +354,10 @@ def main():
     parser.add_argument("deploy_output", help="Path to the deploy-output.py file")
     parser.add_argument("-o", "--only", action="append",
                         help="Specify that not all nodes should be configured, only specified node (can be repeated).")
+
+    # Suppress noisy socket messages
+    logging.getLogger("paramiko").setLevel(logging.CRITICAL)
+
     args = parser.parse_args()
 
     json_output = {}
