@@ -42,7 +42,26 @@ def setup_fileserver_linux(name, leader_admin_password, control_ipv4_addr, game_
     cmd = f"""
 bash << 'EOT' 2>&1 | sudo tee -a /var/log/fileserver_setup.log
 set -x
-sudo apt update && sudo env DEBIAN_FRONTEND=noninteractive apt install -y dnsutils iputils-ping traceroute telnet tcpdump python-is-python3 chrony samba winbind krb5-user libnss-winbind libpam-winbind  ntpdate smbclient
+
+attempts=0
+while (( attempts < 50 ))
+do
+    if sudo apt update && sudo env DEBIAN_FRONTEND=noninteractive apt install -y dnsutils iputils-ping traceroute telnet tcpdump python-is-python3 chrony samba winbind krb5-user libnss-winbind libpam-winbind  ntpdate smbclient
+    then
+        echo "software succeeded after $((attempts+1)) attempt(s)."
+        break
+    fi
+    echo "Attempt $((attempts+1)) failed. Retrying..."
+    sudo netplan apply
+    sleep 5
+    ((attempts++))
+done
+
+if (( attempts == 50 )); then
+    echo "Software install failed after 50 attempts."
+    exit 1
+fi
+
 sudo sed -i '/pool ntp.ubuntu.com        iburst maxsources 4/i pool {fqdn_domain_name}        iburst maxsources 5' {chrony_config_path}
 sudo timedatectl set-timezone America/New_York
 sudo systemctl enable chrony
@@ -160,7 +179,7 @@ EOT
 
     return {
         "setup_fileserver": {"setup-cmd": cmd, "stdout": stdout, "stderr": stderr, "exit_status": exit_status},
-        "verify_fileserver": {"stdout": stdout2, "stderr": stderr2, "exit_status": exit_status2}
+        "verify_setup_fileserver": {"stdout": stdout2, "stderr": stderr2, "exit_status": exit_status2}
     }
 
 
@@ -189,7 +208,19 @@ def mount_home_directories_linux(obj):
 bash << 'EOT' 2>&1 | sudo tee -a /var/log/mount_fileserver.log
 set -x
 ## install and configure libpam-mount/cifs
-sudo apt update && sudo env DEBIAN_FRONTEND=noninteractive apt install cifs-utils smbclient libpam-mount -y
+attempts=0
+while (( attempts < 50 ))
+do
+    if sudo apt update && sudo env DEBIAN_FRONTEND=noninteractive apt install cifs-utils smbclient libpam-mount -y
+    then
+        echo "software succeeded after $((attempts+1)) attempt(s)."
+        break
+    fi
+    echo "Attempt $((attempts+1)) failed. Retrying..."
+    sudo netplan apply
+    sleep 5
+    ((attempts++))
+done
 
 ## Update sssd to use home dirs.
 
@@ -322,20 +353,27 @@ EOT
     # wait for services to be ready.
     time.sleep(15)
 
-    shell = ShellHandler(control_ipv4_addr, "administrator", leader_admin_password)
+    count = 0
+    while count < 50:
+        shell = ShellHandler(control_ipv4_addr, "administrator", leader_admin_password)
 
-    test_setup = "pwd"
-    stdout2, stderr2, exit_status2 = shell.execute_cmd(test_setup, verbose=verbose)
+        test_setup = "pwd"
+        stdout2, stderr2, exit_status2 = shell.execute_cmd(test_setup, verbose=verbose)
+        if stdout2 is None or f'/home/{fqdn_domain_name.lower()}/administrator' not in str(stdout2):
+            print(f"Could not find home directory mounting on {name}, retrying in 15s ...")
+            count += 1
+            time.sleep(15)
+            continue
+
+        return {
+            "mount_fileserver": {"setup-cmd": cmd, "stdout": stdout, "stderr": stderr, "exit_status": exit_status},
+            "verify_mount_fileserver": {"stdout": stdout2, "stderr": stderr2, "exit_status": exit_status2}
+        }
 
     if stdout2 is None or f'/home/{fqdn_domain_name.lower()}/administrator' not in str(stdout2):
         print("mount_home_directories_stdout:" + str(stdout))
         print("mount_home_directories_stderr:" + str(stderr))
         print("verify_home_directories_stdout:" + str(stdout2))
         print("verify_home_directories_stderr:" + str(stderr2))
-        errstr = 'Cannot find fileserver share for home directories on ' + name
+        errstr = f'Cannot find fileserver share for home directories on {name}'
         raise RuntimeError(errstr)
-
-    return {
-        "setup_fileserver": {"setup-cmd": cmd, "stdout": stdout, "stderr": stderr, "exit_status": exit_status},
-        "verify_fileserver": {"stdout": stdout2, "stderr": stderr2, "exit_status": exit_status2}
-    }

@@ -18,7 +18,7 @@ class OpenstackCloud:
         self.conn = None
         self.network_name = None
         self.project_id = os.environ.get('OS_PROJECT_ID')
-        self.project_name = None
+        self.project_name = os.environ.get('OS_PROJECT_NAME')
         self.enterprise_url = None
 
         self.sess = self.get_session()
@@ -52,6 +52,7 @@ class OpenstackCloud:
                            username=user,
                            password=password,
                            project_id=self.project_id,
+                           project_name=self.project_name,
                            auth_url=auth_url)
 
         # Create OpenStack keystoneauth1 session.
@@ -401,7 +402,13 @@ class OpenstackCloud:
         return ret
 
     def deploy_enterprise(self, enterprise):
-        ret = {'check_deploy_ok': self.check_deploy_ok(enterprise)}
+        for i in range(100):
+            try:
+                ret = {'check_deploy_ok': self.check_deploy_ok(enterprise)}
+                break
+            except Exception:
+                pass
+
         if not ret['check_deploy_ok']:
             errstr = "Found that deploying the network will conflict with existing setup."
             raise RuntimeError(errstr)
