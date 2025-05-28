@@ -437,9 +437,9 @@ do
             continue
         fi
 
-        echo {leader_admin_password}| sudo realm join -U administrator {fqdn_domain_name.upper()}  -v
+        echo {leader_admin_password}| sudo realm join -U administrator {fqdn_domain_name.upper()}  -v | sudo tee /var/log/join_output.log
         res=${'{'}PIPESTATUS[1]{'}'}
-        if (( res != 0 ))
+        if ! grep "Already joined to this domain" /var/log/join_output.log && (( res != 0 ))
         then
             echo 'Waiting for realm join to succeed'
             sleep 30s
