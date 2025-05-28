@@ -194,7 +194,7 @@ def mount_home_directories_linux(obj):
     leader_admin_password = leader['admin_pass']
     control_ipv4_addr = obj['control_addr']
 
-    if 'name' not in leader['fileserver']:
+    if 'fileserver' not in leader or 'name' not in leader['fileserver']:
         print(f"Skipping home directdory setup on {name}, as no fileserver for domain")
         return
 
