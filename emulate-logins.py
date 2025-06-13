@@ -185,11 +185,20 @@ def load_json_file(name: str):
 def get_earliest_login(logins):
     days = logins['days']
     earliest = datetime.now()
+
     for day in days:
         for user in days[day]:
-            login_start = datetime.strptime(days[day][user][0]['login_start'], timestamp_format)
+            user_logins = days[day][user]
+
+            # Skip users with no login entries
+            if not user_logins:
+                print(f"Caution:  {user} is taking a day off, on {day}")
+                continue
+
+            login_start = datetime.strptime(user_logins[0]['login_start'], timestamp_format)
             if earliest > login_start:
                 earliest = login_start
+
     return earliest
 
 
