@@ -59,7 +59,7 @@ def deploy_forest(cloud_config, name, control_ipv4_addr, game_ipv4_addr, passwor
     while not status_received and attempts < 60:
         try:
             attempts += 1
-            print("  Waiting for reboot of domain controller leader with ip={} (Expect socket closed by peer messages).".format(control_ipv4_addr))
+            print("  Waiting for reboot of domain controller leader with ip={}.".format(control_ipv4_addr))
             shell = ShellHandler(control_ipv4_addr, user, password)
             stdout2, stderr2, exit_status2 = shell.execute_powershell("get-addomain", verbose=verbose)
             output = str(stdout2) + str(stderr2)
@@ -184,7 +184,7 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
         # stop if successful
         if 'A domain controller could not be contacted' not in str(stderr2) and 'A domain controller could not be contacted' not in str(stdout2):
             break
-        print("  Domain controler registration failed, rebooting and retrying (Expect socket error messages)")
+        print("  Domain controler registration failed, rebooting and retrying.")
         # print(str(stdout2 + stderr2))
         shell.execute_powershell('Restart-computer -force', verbose=verbose)
         time.sleep(60)
@@ -200,7 +200,7 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
     except socket.error:
         pass
 
-    print("  Waiting for reboot of windows node with ip={} (Expect socket error messages).".format(control_ipv4_addr))
+    print("  Waiting for reboot of windows node with ip={}.".format(control_ipv4_addr))
     time.sleep(10)
     status_received = False
     attempts = 0
@@ -313,7 +313,7 @@ def join_domain_windows(name, leader_admin_password, control_ipv4_addr, game_ipv
     except socket.error:
         pass
 
-    print("  Waiting for reboot of windows domain member with ip={} (Expect socket closed by peer messages).".format(control_ipv4_addr))
+    print("  Waiting for reboot of windows domain member with ip={}.".format(control_ipv4_addr))
     time.sleep(10)
     status_received = False
     attempts = 0
@@ -383,8 +383,18 @@ echo Hostname=$(hostname)
 sudo resolvectl status
 
 # install packages.
-sudo apt update
-sudo env DEBIAN_FRONTEND=noninteractive apt install -y dnsutils iputils-ping traceroute telnet tcpdump python-is-python3 chrony krb5-user realmd sssd sssd-tools adcli samba-common-bin
+attempts=0
+while (( attempts < 30 ))
+do
+    if  sudo apt update && sudo env DEBIAN_FRONTEND=noninteractive apt install -y dnsutils iputils-ping traceroute telnet tcpdump python-is-python3 chrony krb5-user realmd sssd sssd-tools adcli samba-common-bin
+    then
+        echo "Domain packages successfully installed."
+        break
+    fi
+    (( attempts++ ))
+    sleep 1
+    echo "Failed to install domain packages."
+done
 
 
 # set time/date to eastern and make sure it's right.
@@ -393,10 +403,17 @@ sudo sed -i '/pool ntp.ubuntu.com        iburst maxsources 4/i pool {fqdn_domain
 sudo systemctl enable chrony
 sudo systemctl restart chrony
 
-while ! sudo chronyc tracking|grep 'Leap status     : Normal'
+attempts=0
+while (( attempts < 60 ))
 do
-    echo waiting for chrony to sync time
+    if sudo chronyc tracking|grep 'Leap status     : Normal'
+    then
+        echo "Time sync succesful."
+        break
+    fi
+    echo "Waiting for chrony to sync time."
     sleep 1
+    (( attempts++ ))
 done
 
 # set up default realm to join domain
@@ -439,7 +456,7 @@ do
 
         echo {leader_admin_password}| sudo realm join -U administrator {fqdn_domain_name.upper()}  -v 2>&1 | sudo tee /var/log/join_output.log
         res=${'{'}PIPESTATUS[1]{'}'}
-        if grep "Already joined to this domain" /var/log/join_output.log 
+        if grep "Already joined to this domain" /var/log/join_output.log
         then
             echo "Already in domain!  Sanity checking realm"
         elif (( res != 0 ))

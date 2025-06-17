@@ -37,6 +37,8 @@ or prompt the user for things like passwords (less preferred), etc.
 ** `endpoint` -- specifies that this is an endpoint that should have human emulation.
 ** `idp` -- specifies that this machine is an Identity Provider.  Shibboleth will be configured.
 ** `sp` -- specifies that this machine is a Service Provider.  Shib. and Moodle will be configured.
+** `fs` -- specifies that this machine is a file server.  endpoint nodes will be configured to 
+   mount domain-users' home directories.  The domain specified here much match the endpoint's domain.
 
 
 # Sample Files

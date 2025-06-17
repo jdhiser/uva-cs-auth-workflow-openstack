@@ -72,7 +72,7 @@ def main():
 
     parser.add_argument(
         "-q", "--query_only", required=False, action="store_true",
-        help="Perform queries only"
+        help="Query the cloud for details about already deployed nodes, instead of deploying them yourself."
     )
 
     args = parser.parse_args()
