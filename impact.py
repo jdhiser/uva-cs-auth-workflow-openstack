@@ -36,11 +36,12 @@ def load_json_file(name: str) -> dict:
 #
 # parameters:
 #         node_name -- The name of the node to find.
-#         built -- The parsed deployment dictionary.
+#         enterprise -- The parsed deployment dictionary.
 #
 # returns: Node dictionary if found, else None.
 #
-def find_node_details(node_name: str, built: dict) -> dict:
+def find_node_details(node_name: str, enterprise: dict) -> dict:
+    built = enterprise['enterprise_built']
     for node in built['deployed']['nodes']:
         if node.get('name') == node_name:
             return node
@@ -71,19 +72,19 @@ def print_result(impact_type: str, node_name: str) -> None:
 #
 # returns: None
 #
-def run_impact(impact_type: str, node_name: str, deployed: dict) -> None:
+def run_impact(impact_type: str, node_name: str, enterprise: dict) -> None:
     if impact_type not in impact_handlers:
         logging.error(f"Unknown impact type '{impact_type}'")
         return
 
-    node = find_node_details(node_name, deployed)
+    node = find_node_details(node_name, enterprise)
     if not node:
         logging.error(f"Node '{node_name}' not found in deployment.")
         return
 
     print_result(impact_type, node_name)
     handler = impact_handlers[impact_type]
-    handler(node)
+    handler(node, enterprise)
 
 
 #
@@ -96,21 +97,21 @@ def run_impact(impact_type: str, node_name: str, deployed: dict) -> None:
 #
 # returns: None
 #
-def apply_impacts(impact_entries: list[str], deployed: dict, parallel: bool = False) -> None:
+def apply_impacts(impact_entries: list[str], enterprise: dict, parallel: bool = False) -> None:
     parsed_impacts = []
 
     for impact_entry in impact_entries:
         if '=' not in impact_entry:
-            logging.error("Each --impact must be in the format <type>=<node>")
+            logging.error("Each --impact must be in the format <type>=<node> where type={confidentialitiy, integrity, availability")
             continue
         impact_type, node_name = impact_entry.split('=', 1)
         parsed_impacts.append((impact_type, node_name))
 
     if parallel:
-        Parallel(n_jobs=-1, backend="threading")(delayed(run_impact)(itype, inode, deployed) for itype, inode in parsed_impacts)
+        Parallel(n_jobs=-1, backend="threading")(delayed(run_impact)(itype, inode, enterprise) for itype, inode in parsed_impacts)
     else:
         for itype, inode in parsed_impacts:
-            run_impact(itype, inode, deployed)
+            run_impact(itype, inode, enterprise)
 
 
 #
@@ -126,7 +127,7 @@ def main() -> int:
         "-i", "--impact",
         action="append",
         type=str,
-        help="Specify the impact in the form <type>=<node>. Can be repeated.",
+        help="Specify the impact in the form <type>=<node>, where type={confidentialitiy, integrity, availability}.  Can be repeated.",
         required=True
     )
     parser.add_argument("-c", "--config", type=str, help="Path to post-deploy-output.json", required=True)
@@ -138,11 +139,9 @@ def main() -> int:
     logging_level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(level=logging_level, format='%(asctime)s %(levelname)s: %(message)s')
 
-    built_data = load_json_file(args.config)
-    enterprise_built = built_data.get("enterprise_built", {})
-    deployed = enterprise_built.get("deployed", {})
+    enterprise = load_json_file(args.config)
 
-    apply_impacts(args.impact, deployed, parallel=args.parallel)
+    apply_impacts(args.impact, enterprise, parallel=args.parallel)
 
     return 0
 
