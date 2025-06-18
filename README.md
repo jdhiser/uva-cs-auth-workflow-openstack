@@ -3,6 +3,108 @@
 This tool helps setup and deploy an enterprise of compute nodes and users with various roles, domains, etc.
 Also included is the ability to simulate workloads on the deployed infrastructure.
 
+## 🏗️ System Workflow Overview
+
+This toolchain provisions a simulated enterprise environment, populates it with domain-controlled users and systems, and then drives realistic login and activity patterns to emulate real-world usage. The workflow is designed for reproducibility, testing, and security research.
+
+---
+
+### 1. **Environment Preparation**
+
+#### `setup.sh`
+
+Sets up the local Python environment and required tools.
+
+* Installs Python dependencies (`requirements.txt`)
+* Prepares OpenStack CLI access (assumes access via `os_env_file`)
+* Ensures you can communicate with the cloud backend and deploy nodes
+
+✅ *Run this once per machine setup or when dependencies change.*
+
+---
+
+### 2. **Infrastructure Deployment**
+
+#### `deploy-nodes.py`
+
+Deploys virtual machines and resources into the specified OpenStack cloud using:
+
+* A **cloud configuration** (`cloud-configs/*.json`) specifying backend details, keypairs, image and instance mappings, etc.
+* An **enterprise configuration** (`enterprise-configs/*.json`) that defines machines, roles (e.g., domain controllers, endpoints), and desired domain topology.
+
+✅ *Output: `deploy-output.json` containing deployed node metadata.*
+
+---
+
+### 3. **Post-deployment Configuration**
+
+#### `post-deploy.py`
+
+Configures services on the deployed infrastructure:
+
+* Joins Windows nodes to domains
+* Promotes domain controllers
+* Configures file servers, IdPs, SPs, etc.
+* Ensures endpoints are reachable and functional
+
+✅ *Output: `post-deploy-output.json`, which feeds into later stages.*
+
+---
+
+### 4. **Login Schedule Generation**
+
+#### `simulate-logins`
+
+Generates a synthetic but plausible login schedule for the enterprise:
+
+* Models user behavior (e.g., shift-based logins, weekend activity)
+* Outputs a `logins.json` file describing who logs in, where, and when
+
+✅ *Input: `post-deploy-output.json`
+✅ Output: `logins.json`*
+
+---
+
+### 5. **Login Emulation**
+
+#### `emulate-logins.py`
+
+Performs the actual remote login behavior described in `logins.json`.
+
+* SSHs or RDPs into the appropriate machines
+* Triggers login sequences
+* Optionally starts background activity emulation
+
+✅ *Real traffic, logs, and artifacts are generated across the environment.*
+
+---
+
+### 6. **(Optional) Impact Simulation**
+
+#### `impact` (custom modules)
+
+Modules that simulate security-impacting behaviors:
+
+* E.g., misconfigurations, password leaks, impersonation, etc.
+* Can be selectively applied to test detection systems
+
+✅ *Augments realism for cybersecurity research.*
+
+---
+
+### 7. **Log Aggregation & Analysis**
+
+#### `post_process_logs`
+
+Parses and normalizes logs from across the environment:
+
+* Aggregates logs from endpoints and servers
+* Optionally extracts features or metrics for ML/security tools
+* Prepares ground-truth labels for supervised experiments
+
+✅ *Final output: Cleaned datasets, metadata, and evaluation artifacts.*
+
+
 ## Usage
 
 
@@ -51,14 +153,14 @@ you should be able to:
 
 ### Simulation
 
-Next, you can generate logins for the deployed infrastrcuture:
+Next, you can generate logins for the deployed infrastructure:
 
 ```
 $ ./simulate-logins.py  user-roles/user-roles.json enterprise-configs/enterprise-tiny.json
 ```
 
 This generates users and estimates a login behavior for these users based on settings in the enterprise.json file
-and user-roles.json file via a stocastic simulation.  
+and user-roles.json file via a stochastic simulation.  
 See additional details on the user-roles in [user-roles.md](./user-roles/user-roles.md).
 Output is written to logins.json, used in later stages.
 
@@ -97,12 +199,68 @@ are performed relative to the current timestamp.
 $ python -u ./emulate-logins.py  post-deploy-output.json logins.json  --rebase-time 2>&1 | stdbuf -o0 -e0 tee workflow.log
 ```
 
+### Generating Impacts on the Emulation
+
+The `impact.py` script applies targeted cybersecurity impacts to specific nodes in a deployed enterprise, using the configuration from `post-deploy-output.json`.
+
+#### Basic Usage
+
+```bash
+$ ./impact.py -i <type>=<node> -c post-deploy-output.json [--parallel] [--verbose]
+```
+
+#### Arguments
+
+* `-i`, `--impact <type>=<node>`: **(required, repeatable)**
+  Specifies a particular impact to simulate. The format is:
+
+  * `confidentiality=node-name`
+  * `integrity=node-name`
+  * `availability=node-name`
+
+  You can specify this argument multiple times to apply multiple impacts.
+
+* `-c`, `--config`: **(required)**
+  Path to the `post-deploy-output.json` file that describes the infrastructure.
+
+* `--parallel`: Optional. Run multiple impact simulations in parallel.
+
+* `--verbose`: Optional. Enable detailed logging output for debugging and traceability.
+
+#### Example
+
+```bash
+$ ./impact.py -i confidentiality=endpoint1 -i integrity=dc1 -c post-deploy-output.json --parallel
+```
+
+This applies a confidentiality impact to `endpoint1` and an integrity impact to `dc1`, running them in parallel.
+
+Use `impact.py --help` to view this help screen at any time.
+
+#### Supported Impact Types
+
+* **`availability`**
+  Simulates service disruption:
+
+  * Stops critical services like `apache2`, `jetty`, `smb`, or Active Directory (NTDS)
+  * Behavior varies by role (SP, IdP, domain controller, file server)
+
+* **`confidentiality`**
+  Simulates data exposure by installing a root-permissioned backdoor to the machine where data can be leaked. The password is `pownd`. On Linux machines, the account is `impactroot`; on Windows machines, the account is `impactadmin`.
+
+* **`integrity`**
+  Simulates unauthorized modification:
+
+  * On SP: modifies the site name from "Moodle" to "Pwnd"
+  * On IdP: modifies the "Forgot password" link text to "You've been pwnd"
+  * On other machines: modifies the MOTD to include a "pwnd" message
+
 ### Cleanup
 
 Lastly, cleanup/destroy the infrastructure:
 
 ```
-./cleanup-nodes.py output.json
+./cleanup-nodes.py deploy-output.json
 ```
 
 Caution:  this destroy/deletes all nodes and infrastructures that were setup in prior steps.  Use with caution.
@@ -112,213 +270,18 @@ Caution:  this destroy/deletes all nodes and infrastructures that were setup in 
 
 Most python scripts have a "verbose" variable near the top of the file.  
 If you're having trouble with some aspect of the deployment, etc., you can try turning that on to see if verbose output 
-is helpful with the problem.  Also, by default setup happens in parallel, and the post-deploy.py script has a `use_parallel`
+is helpful with the problem.  Also, by default setup happens in parallel by default, and the post-deploy.py script has a `use_parallel`
 option that can be used to do sequential setup, which far improves the ability to debug at the expense of significantly more
 setup time.
 
 
 # Deploying in Vanderbilt CAGE2 infrastructure.
 
-## Setup:
 
-In the openstack project you'll be using for the Moodle workflow, you'll need to allocate a node on which
-to run the deployment and provisioning.  To do this do the following:
-
-* Currently, we have created a new network in openstack (`green-network`), and a new subnet
-  (10.10.50.0/24 - `green-subnet`) in this network.
-  > NOTE: Be sure there is a DNS nameserver in the subnet, and set it with the following command:
-  >
-  > `openstack subnet set --dns-nameserver <dns-nameserver-ip-address>` <subnet-id>
-* In this new subnet, we created a new instance using the `Ubuntu22.04` image (a minimal Ubuntu 22.04 image),
-  and called the image `workflow-manager`.
-
-In the `ubuntu` account (i.e. the default user account) of the `workflow-manager` host:
-
-* Copy the following files into the account:
-  1. The private key you use to access github into the `.ssh` directory (which is under the ubuntu user's home
-     directory).
-  2. The `castle-control` private key from the <castle-vm> project into the `.ssh`
-     directory as well.  It is located at:
-     ```
-     <castle-vm-root>/CreateVMs/VelociraptorVMs/secrets/castle-control
-     ```
-        >NOTE: **BEFORE COPYING THE `castle-control` KEY, MAKE SURE IT IS IN RSA FORMAT**.  If it is not in RSA
-        >format, use the following command to convert it:
-        > 
-        >`ssh-keygen -p -N "" -m PEM -f <path-to-castle-control-key>`
-  3. The `<openstack-project-name>-openrc.sh` file, which used to authenticate openstack shell commands to openstack,
-     into the ubuntu user's home directory. `<openstack-project-name>` is the name of the openstack project you're using
-     for the Moodle workflow.
-
-
-* **EVERY TIME YOU LOG IN** you will need to execute the following commands:
-  ```
-  . ~/<openstack-project-name>-openrc.sh
-  eval $(ssh-agent)
-  ssh-add ~/.ssh/castle-control
-  ```
-
-or put them in the `.bashrc` file.
-
-Now, execute the following commands:
-
-```commandline
-cd
-mkdir -p Git
-cd Git
-git clone git@github.com:CASTLEGym/uva-cs-auth-workflow-openstack.git
-cd uva-cs-auth-workflow-openstack
-```
-
-> NOTE: You may have to checkout a particular branch, i.e.
-> ```commandline
-> git checkout <branch-name>
-> ```
-
-## Running deployment:
-
-To run deployment, run
-
-```commandline
-./deploy-nodes.py <arguments>
-```
-
-as above.
-
-Once `deploy-node.py` finishes successfully, it should render output similar to that below
-
-```commandline
-Setting up nodes.
-  Registering windows on dc1
-  ipv4 addr (control): 10.10.50.44
-  ipv4 addr (game): 10.10.50.44
-  password: 2n0A1db40MYy3DdDPdd7
-  Registering windows on dc2
-  ipv4 addr (control): 10.10.50.114
-  ipv4 addr (game): 10.10.50.114
-  password: wS8cVHIjJBHyN65vchwi
-  Registering windows on winep1
-  ipv4 addr (control): 10.10.50.195
-  ipv4 addr (game): 10.10.50.195
-  password: yolcnB2f1arqlaLXByld
-```
-
-**THESE PASSWORDS ARE VERY IMPORTANT.**  Below is a table of the hosts and their corrsponding passwords according to
-this output:
-
-| hostname | password             |
-|----------|----------------------|
-| dc1      | 2n0A1db40MYy3DdDPdd7 |
-| dc2      | wS8cVHIjJBHyN65vchwi |
-| winep1   | yolcnB2f1arqlaLXByld |
-
-**For each of these hosts**, do the following:
-
-1. Log in to the host:
-   ```commandline
-   ssh -l administrator <hostname>
-   ``` 
-
-2. Enter the password for the host when prompted.
-
-3. A command-prompt will execute once you've logged in to the host.  Execute a powershell by executing the
-   `powershell` command:
-   ```commandline
-   powershell
-   ```
-4. Execute the `ipconfig command`:
-   ```commandline
-   ipconfig
-   ```
-   It will render output similar to the following:
-   ```commandline
-   Windows IP Configuration
-
-
-   Ethernet adapter <NETADAPTER NAME>:
-
-      Connection-specific DNS Suffix  . : <DNS SUFFIX>
-      Link-local IPv6 Address . . . . . : XXXX::XXXX:XXXX:XXXX:XXXX%4
-      IPv4 Address. . . . . . . . . . . : XXX.XXX.XXX.XXX
-      Subnet Mask . . . . . . . . . . . : XXX.XXX.XXX.XXX
-      Default Gateway . . . . . . . . . : XXX.XXX.XXX.XXX
-   ```
-
-5. Using the `<NETADAPTER-NAME>` from the output of the `ipconfig` command above, execute the following command:
-   ```commandline
-   rename-netadapter -name <NETADAPTER-NAME> -newname "Ethernet Instance 0"
-   ```
-
-6. Enter the `exit` command to exit the powershell:
-   ```commandline
-   exit
-   ```
-
-7. Enter the `exit` command again to exit the command-prompt and log out of the host:
-   ```commandline
-   exit
-   ```
-
-
-* Run `post-deploy.py` to get a `post-deploy-output.json`.  
-Use a enterprise configuration file that matches the VU deployment you wish to run the workflow on.
-(E.g. cage2-ssh for the ssh workflow, or cage2-shib for the shib and Moodle workflows.)
-Run `clean-nodes.py` to remove all nodes.
-
-* Clone `git@github.com:CASTLEGym/castle-vm.git`.  
-
-* Check out the `develop` branch, follow the README to deploy and provision the CAGE2 environment (including the UVA workflow stacks).
-Make sure you follow the section at the end of the README about deploying workflows.
-
-* Log into the "workflow" VM, and clone this repository.
-
-* Copy the post-deploy-output.json from the first step to the workflow VM.  Modify it such that the addresses 
-array matches the CAGE2 addresses assigned in the heat template. This modification can be done manually
-by adding the control and game IPs to the addresses array in the JSON for each machine in the game.  
-For cage2, this can be done with the convenience script called `convert-to-vu-cage2.py`.
-```
-cd /path/to/uva-workflows
-./convert-to-vu-cage2.py ../../castle-vm/CreateVMs/VelociraptorVMs/secrets/castle-control
-cd /path/to/castle-vm
-ssh-keygen -f "/home/jdh8d/.ssh/known_hosts" -R "workflow.castle.os"
-scp -i CreateVMs/VelociraptorVMs/secrets/castle-control CreateVMs/VelociraptorVMs/secrets/castle-control ubuntu@workflow.castle.os:~/.ssh
-scp -i CreateVMs/VelociraptorVMs/secrets/castle-control ~/.ssh/id_rsa ubuntu@workflow.castle.os:~/.ssh
-scp -i CreateVMs/VelociraptorVMs/secrets/castle-control ../uva_workflows/uva-cs-auth-workflow-openstack/deploy-output-vu-cage2.json ubuntu@workflow.castle.os:~/deploy-output.json 
-ssh -i CreateVMs/VelociraptorVMs/secrets/castle-control ubuntu@workflow.castle.os
-git clone git@github.com:jdhiser/uva-cs-auth-workflow-openstack.git workflow
-mv deploy-output.json  workflow
-cd workflow
-git checkout -b pi_meeting_oct_2024
-./setup.sh
-mv ~/.ssh/castle-control ~/.ssh/id_rsa
-./post-deploy.py deploy-output.json
-
-```
-
-
-* Set up DNS entries for the key machines (dc1.castle.os, service.castle.os, identity.castle.os).  DNS 
-entries should point at the game addresses, not the control addresses.  
-(TODO: Automate this leverage the the heat templates from the castle-vm repo.  
-While I can do this with designate automatically, I'm not sure that works for VU yet.)
-
-* Run post-deploy.py with the modified post-deploy-output.json to configure the HEAT-template deployed nodes.  
-
-* Simulate and emulate logins from the workflow VM as per normal (described above).
-
-# Debugging
-
-It's python code, debug with your favorite debugger.  However, it's worth noting that 
-most files have a "verbose" global variable so you can turn on verbose logging output 
-for that file only.  Further, there is a `use_parallel` in the post-deploy script to 
-sequentialize the deployment of nodes, which makes the verbose output much clearer.
-
-Almost all input/output from remote machines is captured to the output file of every step.
-You can load the output file into any JSON viewer (recommend something like Firefox)
-and browse to output for each step.  These outputs can help diagnose connection issues,
-etc.
+This aspect is now handled by the castle-vm `gradlew` command.  See documentation there.
 
 # Collecting Metrics
-After you run a workflow (and assuming you re-directed output to `workflow.log`), you can compute availability metrics:
+After you run a workflow (and assuming you redirected output to `workflow.log`), you can compute availability metrics:
 
 ```
 ./compute_metrics.sh workflow.log
