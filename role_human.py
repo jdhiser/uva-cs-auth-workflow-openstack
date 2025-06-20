@@ -44,6 +44,7 @@ def install_human_linux(node, user, control_ipv4_addr, password, cloud_config):
         'sudo env DEBIAN_FRONTEND=noninteractive apt install -y python3 python3-pip virtualenv xvfb unzip ; ' +
         'sudo unzip /tmp/pyhuman.zip ; ' +
         'sudo sed -i "s/castle.os/{}/" /opt/pyhuman/app/workflows/browse_shibboleth.py /opt/pyhuman/app/workflows/moodle.py ; '.format(enterprise_url) +
+        'sudo sed -i "s/project1.os/{}/" /opt/pyhuman/app/workflows/browse_shibboleth.py /opt/pyhuman/app/workflows/moodle.py ; '.format(enterprise_url) +
         'sudo virtualenv -p python3 /opt/pyhuman ; '
         'sudo /opt/pyhuman/bin/python3 -m pip install -r requirements.txt ; ' +
         'cd /tmp ; ' +

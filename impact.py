@@ -102,7 +102,7 @@ def apply_impacts(impact_entries: list[str], enterprise: dict, parallel: bool = 
 
     for impact_entry in impact_entries:
         if '=' not in impact_entry:
-            logging.error("Each --impact must be in the format <type>=<node> where type={confidentialitiy, integrity, availability")
+            logging.error("Each --impact must be in the format <type>=<node> where type={confidentiality, integrity, availability")
             continue
         impact_type, node_name = impact_entry.split('=', 1)
         parsed_impacts.append((impact_type, node_name))

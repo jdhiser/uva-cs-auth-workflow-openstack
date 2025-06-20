@@ -6,7 +6,7 @@ import socket
 import time
 
 # Verbose output flag
-verbose = False
+verbose = True
 
 
 #
