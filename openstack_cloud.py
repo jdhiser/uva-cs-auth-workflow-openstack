@@ -19,6 +19,7 @@ class OpenstackCloud:
         self.network_name = None
         self.project_id = os.environ.get('OS_PROJECT_ID')
         self.project_name = os.environ.get('OS_PROJECT_NAME')
+        self.verify= 'OS_CACERT' in os.environ
         self.enterprise_url = None
 
         self.sess = self.get_session()
@@ -30,7 +31,7 @@ class OpenstackCloud:
 
     def get_session(self):
         options = argparse.ArgumentParser(description='Awesome OpenStack App')
-        self.conn = openstack.connect(options=options, verify=False)
+        self.conn = openstack.connect(options=options, verify=self.verify)
 
         project = self.conn.identity.find_project(self.project_id)
         self.project_name = project.name
@@ -57,7 +58,7 @@ class OpenstackCloud:
 
         # Create OpenStack keystoneauth1 session.
         # https://goo.gl/BE7YMt
-        sess = session.Session(auth=auth, verify=False)
+        sess = session.Session(auth=auth, verify=self.verify)
 
         return sess
 
@@ -84,7 +85,7 @@ class OpenstackCloud:
     def check_deploy_ok(self, enterprise):
         zone = self.find_zone()
         if zone is not None:
-            print(f"Zone {self.enterprise_url}u already exists as: {zone}.")
+            print(f"Zone {self.enterprise_url} already exists as: {zone}.")
             return False
 
         server_name_set = {x['name'].strip() for x in self.servers.values()}
