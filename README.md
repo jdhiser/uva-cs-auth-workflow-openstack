@@ -77,6 +77,9 @@ Performs the actual remote login behavior described in `logins.json`.
 
 ✅ *Real traffic, logs, and artifacts are generated across the environment.*
 
+`monitor_confidentiality.py` can run concurrently with emulate-logins.py to collect 
+confidentiality metrics.  It can be launched before, during, or after emulation.
+
 ---
 
 ### 6. **(Optional) Impact Simulation**
@@ -132,7 +135,7 @@ $ ./post-deploy.py deploy-output.json
 
 This deploys the infrastructure, setups up domain controllers, etc.  Output is written to `deploy-output.json` and `post-deploy-output.json`.  
 These files needs to be passed to later stages.
-If `post-deploy-nodes.py` fails,  it is OK to re-run and see if the failure was temporary (e.g., a remote repository being unavailable or a network interference issue).
+If `post-deploy.py` fails,  it is OK to re-run and see if the failure was temporary (e.g., a remote repository being unavailable or a network interference issue).
 
 Some sample enterprises are included.  See [`enterprise.md`](./enterprise-configs/enterprise.md) for more details about these
 files and how to create your own.
@@ -199,6 +202,8 @@ are performed relative to the current timestamp.
 $ python -u ./emulate-logins.py  post-deploy-output.json logins.json  --rebase-time 2>&1 | stdbuf -o0 -e0 tee workflow.log
 ```
 
+You may optionally run `monitor_confidentiality.py` during emulation to track ongoing privileged access across the testbed.  See the section on Confidentiality.
+
 ### Generating Impacts on the Emulation
 
 The `impact.py` script applies targeted cybersecurity impacts to specific nodes in a deployed enterprise, using the configuration from `post-deploy-output.json`.
@@ -254,6 +259,85 @@ Use `impact.py --help` to view this help screen at any time.
   * On SP: modifies the site name from "Moodle" to "Pwnd"
   * On IdP: modifies the "Forgot password" link text to "You've been pwnd"
   * On other machines: modifies the MOTD to include a "pwnd" message
+
+For continuous validation of confidentiality impacts, see `monitor_confidentiality.py`.
+
+
+### Confidentiality Impact Monitoring Module
+
+This module monitors deployed enterprise nodes to compute a "confidentiality
+score" that reflects the ability of an attacker to gain privileged access via
+known backdoor accounts (`impactroot` on Linux, `impactadmin` on Windows).
+
+#### Purpose
+It provides ongoing telemetry on whether nodes:
+- Are completely inaccessible (score = 1.0)
+- Allow SSH but deny privilege escalation (score = 0.5)
+- Allow full privileged access (score = 0.0)
+
+This helps quantify the effectiveness of confidentiality impacts.
+
+#### Example Usage
+```bash
+$ python monitor_confidentiality.py \
+    --post-deploy-output post-deploy-output.json \
+    --time-interval 300 \
+    --output impacts.jsonl \
+    --verbose
+```
+
+This will:
+- Connect to each node listed in `post-deploy-output.json`
+- Attempt login using the known backdoor credentials
+- Evaluate if sudo access is allowed
+- Append JSON-formatted result summaries to `impacts.jsonl` every 5 minutes
+
+#### Output Format
+Each log entry includes:
+```json
+{
+  "timestamp": "2025-06-19T14:05:00.123456",
+  "total_nodes": 12,
+  "average_confidentiality_score": 0.25,
+  "count_score_0": 9,
+  "count_score_0.5": 2,
+  "count_score_1": 1,
+  "scores": {
+    "linep1": {
+      "confidentiality_score": 0.0,
+      "status": "ssh and sudo successful"
+    },
+    "linep2": {
+      "confidentiality_score": 0.5,
+      "status": "ssh ok, sudo failed"
+    },
+    "win7": {
+      "confidentiality_score": 1.0,
+      "status": "ssh failed"
+    }
+  }
+}
+```
+
+This output can be used to:
+- Track the real-time security state of the testbed
+- Trigger alerts if compromised nodes become accessible again
+- Validate proper deployment of `impact_confidentiality` modules
+
+#### Digital Exhaust
+Login attempts performed by this monitor leave traces in system logs, which can
+be useful for forensic analysis or evaluating intrusion detection systems.
+
+On Linux nodes:
+- SSH login attempts will be logged to `/var/log/auth.log`
+- Successful or failed `sudo` attempts will also appear in this log
+
+On Windows nodes:
+- Remote login and administrative activity may appear in Windows Event Logs
+  under Security (Event Viewer > Windows Logs > Security)
+
+
+
 
 ### Cleanup
 
@@ -336,4 +420,55 @@ Workflow statistics are emitted as the emulation runs. They are of the form:
 There are two kinds of stats collected: (1) workflow-level, (2) workflow but at the step level. The step-level workflows have a `step_name` defined, whereas the workflow level stats do not.
 
 To go beyond the availability metrics reported by `compute_metrics.sh`, highly recommend to write a python program to ingest all the JSON-formatted stats in the log file, e.g., in `workflow.log`
+
+
+### Reproducibility & Reuse
+
+This workflow is designed with reproducibility and controlled experimentation in
+mind. It supports deterministic input generation, repeatable infrastructure
+provisioning, and modular simulation and monitoring phases.
+
+#### Key Features
+
+- **Deterministic Login Behavior**
+  - Use `--seed <int>` with `simulate-logins.py` or `emulate-logins.py` to
+    produce consistent login behavior across runs.
+
+- **Timestamp Rebasing**
+  - Use `--rebase-time` with `emulate-logins.py` to shift all login timestamps
+    relative to the current time. This allows replay of the same login plan
+    with updated timestamps.
+
+- **Configurable Output Targets**
+  - Most tools (e.g., `simulate-logins.py`, `monitor_confidentiality.py`)
+    accept custom output paths and filenames, enabling parallel experiments.
+
+- **Replay-Friendly Artifacts**
+  - Files like `logins.json`, `post-deploy-output.json`, and impact results are
+    stable and can be reused in downstream steps without re-execution.
+
+
+#### Suggested Reuse Patterns
+
+- Generate login plans once, reuse many times:
+  ```bash
+  $ ./simulate-logins.py ... > login-plan.json
+  $ ./emulate-logins.py post-deploy-output.json login-plan.json
+  $ ./emulate-logins.py post-deploy-output.json login-plan.json --rebase-time
+  ```
+
+- Split monitor from emulation:
+  ```bash
+  $ python monitor_confidentiality.py --output impacts-run1.jsonl &
+  $ python emulate-logins.py post-deploy-output.json login-plan.json
+  ```
+
+- Use consistent seeds for reproducibility:
+  ```bash
+  $ ./simulate-logins.py --seed 1234 ...
+  $ ./emulate-logins.py --seed 1234 ...
+  ```
+
+This approach ensures traceability, repeatability, and clean ground-truth
+labeling for research and detection validation.
 
