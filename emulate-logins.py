@@ -52,6 +52,8 @@ file_lock = threading.Lock()
 
 # ndjson format
 def record_log(logfile, new_record):
+    if not logfile:
+        return
     json_line = json.dumps(new_record)
 
     with file_lock:  # Acquire the lock
@@ -141,8 +143,7 @@ def emulate_login(number, login, user_data, built, seed, logfile):
     new_output = {"cmd": cmd, "stdout": [stdout, stdout2], "stderr": [
         stderr, stderr2], "login": login, "exit_status": [exit_status, exit_status2]}
 
-    if logfile:
-        record_log(logfile, new_output)
+    record_log(logfile, new_output)
 
     login_results.append(new_output)
 

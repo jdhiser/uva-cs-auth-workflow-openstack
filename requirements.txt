@@ -11,3 +11,4 @@ python_neutronclient
 python_novaclient
 flake8
 autopep8
+pandas

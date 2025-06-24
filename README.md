@@ -108,7 +108,6 @@ Parses and normalizes logs from across the environment:
 ✅ *Final output: Cleaned datasets, metadata, and evaluation artifacts.*
 
 
-## Usage
 
 
 ### Site Configuration

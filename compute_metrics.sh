@@ -1,18 +1,8 @@
 #!/bin/bash
 
-if [ -z "$1" ]; then
-	echo "Usage: $0 <Workflow_log_file>"
-	exit 1
-fi
 
-Workflow_log=$1
-
-if [ ! -f "$Workflow_log" ]; then
-	echo "Workflow log file \"$Workflow_log\" does not exist"
-	exit 1
-fi
-
-compute_availability_for_ssh() {
+compute_availability_for_ssh() 
+{
 	ssh_attempts_linux=$(grep -i "To linux node" $Workflow_log | wc -l)
 	ssh_failed_linux=$(grep "Failed connect to user" $Workflow_log | grep -i "linux" | grep "FAILED" | wc -l )
 	ssh_success_linux=$(grep "ssh successful" $Workflow_log | grep -i "linux" | wc -l )
@@ -50,7 +40,8 @@ compute_availability_for_ssh() {
 	echo "SSH: num_err=$ssh_failed"
 }
 
-compute_availability_for_workflow() {
+compute_availability_for_workflow() 
+{
 	workflow_name=$1
 
 	start_count=$( grep workflow_name $Workflow_log | grep -v step_name | grep $workflow_name | grep '"start"' | wc -l )
@@ -67,12 +58,13 @@ compute_availability_for_workflow() {
 	echo "Workflow $workflow_name: num_err=$err_count"
 }
 
-compute_availability_for_workflow_by_steps() {
+compute_availability_for_workflow_by_steps() 
+{
 	workflow_name=$1
 
-	start_count=$( grep workflow_name $Workflow_log | grep step_name | grep '"start"' | wc -l )
-	success_count=$( grep workflow_name $Workflow_log | grep step_name | grep '"success"' | wc -l )
-	err_count=$( grep workflow_name $Workflow_log | grep step_name | grep error | wc -l )
+	start_count=$( grep workflow_name $Workflow_log | grep step_name | grep $workflow_name | grep '"start"' | wc -l )
+	success_count=$( grep workflow_name $Workflow_log | grep step_name | grep $workflow_name | grep '"success"' | wc -l )
+	err_count=$( grep workflow_name $Workflow_log | grep step_name | grep $workflow_name | grep error | wc -l )
 
 	availability=$( echo "scale=4; $success_count / $start_count" | bc )
 	
@@ -84,7 +76,8 @@ compute_availability_for_workflow_by_steps() {
 	echo "Workflow $workflow_name steps: num_err=$err_count"
 }
 
-compute_availability_for_all_workflows() {
+compute_availability_for_all_workflows() 
+{
 	workflow_name=$1
 
 	start_count=$( grep workflow_name $Workflow_log | grep -v step_name | grep '"start"' | wc -l )
@@ -101,7 +94,8 @@ compute_availability_for_all_workflows() {
 	echo "All workflows: num_err=$err_count"
 }
 
-compute_availability_for_all_workflows_by_steps() {
+compute_availability_for_all_workflows_by_steps() 
+{
 	workflow_name=$1
 
 	start_count=$( grep workflow_name $Workflow_log | grep step_name | grep '"start"' | wc -l )
@@ -118,18 +112,34 @@ compute_availability_for_all_workflows_by_steps() {
 	echo "All workflow steps: num_err=$err_count"
 }
 
-compute_availability_for_ssh
+main()
+{
+	if [ -z "$1" ]; then
+		echo "Usage: $0 <Workflow_log_file>"
+		exit 1
+	fi
 
-workflows=$(grep workflow_name $Workflow_log | jq -r .workflow_name | sort | uniq |  paste -sd ' ')
-for workflow_name in $workflows
-do
-	compute_availability_for_workflow $workflow_name
-	compute_availability_for_workflow_by_steps $workflow_name
-done
+	Workflow_log=$1
 
-compute_availability_for_all_workflows
-compute_availability_for_all_workflows_by_steps
+	if [ ! -f "$Workflow_log" ]; then
+		echo "Workflow log file \"$Workflow_log\" does not exist"
+		exit 1
+	fi
 
-echo 
-echo "Metrics computed for workflows: ssh ${workflows}"
+	compute_availability_for_ssh
 
+	workflows=$(grep workflow_name $Workflow_log | jq -r .workflow_name | sort | uniq |  paste -sd ' ')
+	for workflow_name in $workflows
+	do
+		compute_availability_for_workflow $workflow_name
+		compute_availability_for_workflow_by_steps $workflow_name
+	done
+
+	compute_availability_for_all_workflows
+	compute_availability_for_all_workflows_by_steps
+
+	echo 
+	echo "Metrics computed for workflows: ssh ${workflows}"
+}
+
+main "$@"
