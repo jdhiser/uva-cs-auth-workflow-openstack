@@ -61,6 +61,29 @@ def record_log(logfile, new_record):
             file.write(json_line + '\n')
             file.flush()
 
+
+
+def log_ssh(status: str, message: str, host_ip:str):
+        timestamp = datetime.utcnow().isoformat()
+        log_entry = {
+            "timestamp": timestamp,
+            "workflow_name": "ssh",
+            "status": status,
+            "message": message,
+            "host_ip": host_ip
+        }
+        print(json.dumps(log_entry))
+
+        if status == "start":
+            log_entry["step_name"] = "connect"
+            print(json.dumps(log_entry))
+
+        if status == "success":
+            log_entry["step_name"] = "connect"
+            print(json.dumps(log_entry))
+
+
+
 def emulate_login(number, login, user_data, built, seed, logfile):
     login_from = login['from']
     if 'ip' not in login_from:
@@ -97,7 +120,9 @@ def emulate_login(number, login, user_data, built, seed, logfile):
     shell = None
 
     try:
-        logger.info(f"#{number} from ip {from_ip_str} with mac {mac} to ip = {targ_ip}, user = {username}@{domain}, password = {password}")
+        msg=f"#{number} from ip {from_ip_str} with mac {mac} to ip = {targ_ip}, user = {username}@{domain}, password = {password}"
+        log_ssh("start", msg, targ_ip)
+        logger.info(msg);
 
         if use_fake_fromip:
             add_command = (
@@ -137,6 +162,7 @@ def emulate_login(number, login, user_data, built, seed, logfile):
         logger.warning(f"Aborting due to KeyboardInterrupt from ip {from_ip_str} with mac {mac} to ip = {targ_ip}, user = {username}@{domain}, password = {password}")
         raise
     except Exception as e:
+        log_ssh("error", msg, targ_ip)
         logger.exception(f"FAILED CONNECTION {'windows' if is_windows else 'linux'} to user = {username}@{domain}@{targ_ip}, password = {password}")
         pass
 
@@ -144,6 +170,7 @@ def emulate_login(number, login, user_data, built, seed, logfile):
         stderr, stderr2], "login": login, "exit_status": [exit_status, exit_status2]}
 
     record_log(logfile, new_output)
+    log_ssh("success", msg, targ_ip)
 
     login_results.append(new_output)
 

@@ -7,58 +7,59 @@ import argparse
 
 
 """
-MetricCounts
-------------
+RawMetricCounts
+---------------
 Represents the raw count of events for a given workflow or step.
 Fields:
     - total: Total number of events observed
     - start: Number of times the workflow/step was started
     - success: Number of successful completions
     - error: Number of error outcomes
+    - integrity_1: Count of integrity==1
+    - integrity_0: Count of integrity==0
 """
-class MetricCounts(TypedDict):
+class RawMetricCounts(TypedDict):
     total: int
     start: int
     success: int
     error: int
+    integrity_1: int
+    integrity_0: int
 
 
 """
-AvailabilityStats
-------------------
-Stores computed availability statistics for a workflow or step.
+WorkflowStepMetrics
+--------------------
+Stores computed metrics for a workflow or step.
 Fields:
     - availability: Success ratio, or "N/A" if no starts
     - num_started: Count of start events
     - num_success: Count of success events
     - num_err: Count of error events
+    - integrity_total: Number of events with integrity data
+    - integrity_success: Count of integrity==1
+    - integrity_failure: Count of integrity==0
+    - integrity: Integrity ratio or "N/A" if no integrity data
 """
-class AvailabilityStats(TypedDict):
-    availability: Any  # Can be float or "N/A"
+class WorkflowStepMetrics(TypedDict):
+    availability: Any
     num_started: int
     num_success: int
     num_err: int
+    integrity_total: int
+    integrity_success: int
+    integrity_failure: int
+    integrity: Any
 
 
 # Type aliases for cleaner annotations
 JsonObject = Dict[str, Any]
 JsonObjectList = List[JsonObject]
-MetricsByName = Dict[str, MetricCounts]
-MetricsCollection = Dict[str, MetricsByName]
-AvailabilityReport = Dict[str, Dict[str, AvailabilityStats]]
+MetricsByName = Dict[str, RawMetricCounts]
+RawMetricsCollection = Dict[str, MetricsByName]
+ComputedMetricsReport = Dict[str, Dict[str, WorkflowStepMetrics]]
 
 
-"""
-extract_json_objects
---------------------
-Reads a log file line by line and extracts valid JSON objects.
-
-Parameters:
-    log_file_path (str): Path to the log file
-
-Returns:
-    JsonObjectList: A list of dictionaries parsed from JSON lines
-"""
 def extract_json_objects(log_file_path: str) -> JsonObjectList:
     json_objects: JsonObjectList = []
     with open(log_file_path, 'r') as file:
@@ -73,30 +74,19 @@ def extract_json_objects(log_file_path: str) -> JsonObjectList:
     return json_objects
 
 
-"""
-parse_json_objects
-------------------
-Classifies and counts status occurrences for each workflow and step.
-
-Parameters:
-    json_objects (JsonObjectList): List of valid JSON dictionaries
-
-Returns:
-    MetricsCollection: Aggregated raw counts for workflows and steps
-"""
-def parse_json_objects(json_objects: JsonObjectList) -> MetricsCollection:
-    metrics: MetricsCollection = {
-        "workflows": defaultdict(lambda: {"total": 0, "start": 0, "success": 0, "error": 0}),
-        "steps": defaultdict(lambda: {"total": 0, "start": 0, "success": 0, "error": 0})
+def collect_raw_metrics(json_objects: JsonObjectList) -> RawMetricsCollection:
+    metrics: RawMetricsCollection = {
+        "workflows": defaultdict(lambda: {"total": 0, "start": 0, "success": 0, "error": 0, "integrity_1": 0, "integrity_0": 0}),
+        "steps": defaultdict(lambda: {"total": 0, "start": 0, "success": 0, "error": 0, "integrity_1": 0, "integrity_0": 0})
     }
 
-    # Classify each JSON object and increment relevant counters
     for obj in json_objects:
         if "workflow_name" in obj and "status" in obj:
             wf = obj["workflow_name"]
             status = obj["status"]
             category = "steps" if "step_name" in obj else "workflows"
             metrics[category][wf]["total"] += 1
+
             if status == "start":
                 metrics[category][wf]["start"] += 1
             elif status == "success":
@@ -105,125 +95,71 @@ def parse_json_objects(json_objects: JsonObjectList) -> MetricsCollection:
                 metrics[category][wf]["error"] += 1
             else:
                 print(f"Warning: Unrecognized status '{status}' in object: {json.dumps(obj)}")
+
+            if "integrity" in obj:
+                if obj["integrity"] == 1:
+                    metrics[category][wf]["integrity_1"] += 1
+                elif obj["integrity"] == 0:
+                    metrics[category][wf]["integrity_0"] += 1
+                else:
+                    print(f"Warning: Unexpected integrity value '{obj['integrity']}' in object: {json.dumps(obj)}")
         else:
             print(f"Warning: Missing required fields in object: {json.dumps(obj)}")
 
     return metrics
 
 
-"""
-compute_availability
---------------------
-Converts raw counts into availability statistics for each workflow/step.
-
-Parameters:
-    metrics (MetricsCollection): Raw parsed counts per name
-
-Returns:
-    AvailabilityReport: Availability statistics with success ratios
-"""
-def compute_availability(metrics: MetricsCollection) -> AvailabilityReport:
-    report: AvailabilityReport = {}
+def compute_metrics(raw_metrics: RawMetricsCollection) -> ComputedMetricsReport:
+    report: ComputedMetricsReport = {}
     for category in ["workflows", "steps"]:
-        category_report: Dict[str, AvailabilityStats] = {}
-        for wf, counts in metrics[category].items():
+        category_report: Dict[str, WorkflowStepMetrics] = {}
+        for wf, counts in raw_metrics[category].items():
             start = counts["start"]
             success = counts["success"]
             error = counts["error"]
             availability = round(success / start, 4) if start > 0 else "N/A"
+
+            integrity_1 = counts["integrity_1"]
+            integrity_0 = counts["integrity_0"]
+            integrity_total = integrity_1 + integrity_0
+            integrity = round(integrity_1 / integrity_total, 4) if integrity_total > 0 else "N/A"
+
             category_report[wf] = {
-                "availability": availability,
-                "num_started": start,
-                "num_success": success,
-                "num_err": error
+                "availability_average": availability,
+                "availability_total": start,
+                "availability_success": success,
+                "availability_error": error,
+                "integrity_average": integrity,
+                "integrity_total": integrity_total,
+                "integrity_success": integrity_1,
+                "integrity_failure": integrity_0
             }
         report[category] = category_report
     return report
 
 
-"""
-print_metrics
--------------
-Prints availability statistics for a single workflow or step.
-
-Parameters:
-    label (str): Header label for the output block
-    data (AvailabilityStats): The computed statistics to display
-"""
-def print_metrics(label: str, data: AvailabilityStats):
-    print(f"\n{label}")
-    print(f"Availability: {data['availability']}")
-    print(f"Started: {data['num_started']}")
-    print(f"Success: {data['num_success']}")
-    print(f"Errors: {data['num_err']}")
-
-
-"""
-print_summary
--------------
-Aggregates and prints total availability across all workflows or steps.
-
-Parameters:
-    label (str): Category label (e.g., "Workflows")
-    count (int): Number of unique names observed
-    start (int): Total start events across all names
-    success (int): Total success events across all names
-"""
-def print_summary(label: str, count: int, start: int, success: int):
-    if start:
-        availability = round(success / start, 4)
-        print_metrics(f"Total {label}: {count}", {
-            "availability": availability,
-            "num_started": start,
-            "num_success": success,
-            "num_err": start - success
-        })
-    else:
-        print(f"No {label.lower()} starts to compute availability.")
-
-
-"""
-main
-----
-Entry point for command-line invocation.
-Parses arguments, processes the log, and prints detailed and summary metrics.
-"""
 def main():
     parser = argparse.ArgumentParser(description="Parse workflow and step metrics from a log file.")
     parser.add_argument("logfile", help="Path to the log file")
     args = parser.parse_args()
 
-    # Read and process input log
     json_objects = extract_json_objects(args.logfile)
-    metrics = parse_json_objects(json_objects)
-    report = compute_availability(metrics)
+    raw_metrics = collect_raw_metrics(json_objects)
+    report = compute_metrics(raw_metrics)
 
-    # Prepare aggregate stats
-    all_keys = set(report["workflows"]).union(report["steps"])
-    total_workflows = total_steps = 0
-    total_workflow_success = total_step_success = 0
-    total_workflow_start = total_step_start = 0
-
-    # Output metrics per workflow
-    for wf in sorted(all_keys):
+    output = {
+        "metric_type": "workflow_summary",
+        "report": {}
+    }
+    all_workflows = set(report["workflows"]).union(report["steps"])
+    for wf in sorted(all_workflows):
+        output["report"][wf] = {}
         if wf in report["workflows"]:
-            data = report["workflows"][wf]
-            total_workflows += 1
-            total_workflow_start += data["num_started"]
-            total_workflow_success += data["num_success"]
-            print_metrics(f"=== WORKFLOW: {wf} ===", data)
-
+            output["report"][wf]["workflow"] = report["workflows"][wf]
         if wf in report["steps"]:
-            data = report["steps"][wf]
-            total_steps += 1
-            total_step_start += data["num_started"]
-            total_step_success += data["num_success"]
-            print_metrics(f"--- STEPS for {wf} ---", data)
+            output["report"][wf]["steps"] = report["steps"][wf]
 
-    # Output summary
-    print("\n=== SUMMARY ===")
-    print_summary("Workflows", total_workflows, total_workflow_start, total_workflow_success)
-    print_summary("Steps", total_steps, total_step_start, total_step_success)
+    print(json.dumps(output, indent=2))
 
 
 if __name__ == "__main__":
