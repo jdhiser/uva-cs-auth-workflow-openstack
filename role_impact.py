@@ -6,7 +6,7 @@ import socket
 import time
 
 # Verbose output flag
-verbose = True
+verbose = False
 
 
 #
@@ -54,7 +54,7 @@ def impact_availability(node: dict, enterprise: dict) -> dict:
     elif 'domain_controller' in node_desc['roles'] or 'domain_controller_leader' in node_desc['roles']:
         cmd = "Stop-Service -Name NTDS -force; Get-Service -Name NTDS"
         expected_str = "Stopped"
-    elif 'fs' in node_desc['roles']:
+    elif 'fileserver' in node_desc['roles']:
         cmd = "sudo systemctl stop smbd && sudo systemctl status smbd"
         expected_str = "Active: inactive"
     elif 'linux' in node_desc['roles']:
@@ -112,10 +112,6 @@ def impact_availability(node: dict, enterprise: dict) -> dict:
     return result
 
 
-#
-# impact_availability - Simulate an availability-related impact on a node.
-# (Unchanged, already uses correct credential extraction.)
-
 
 #
 # impact_integrity - Simulate an integrity-related impact on a node.
@@ -154,8 +150,21 @@ def impact_integrity(node: dict, enterprise: dict) -> dict:
 
     try:
         shell = ShellHandler(control_ip, user, password, verbose=verbose)
+        if 'fileserver' in node_desc['roles']:
+        
+            cmd = """
+sudo bash -x << 'EOF' | sudo tee /opt/integrity-impact-fs.sh > /dev/null
 
-        if 'sp' in node_desc['roles']:
+echo "[impact_integrity] modifying user home directories and new-user default home dirs"
+for bashrc_file in  /srv/homedirs/*/.bashrc /etc/skel/.bashrc
+do
+    echo  "export PS1='you have been pwned # ' " >> $bashrc_file
+done
+EOF
+echo "[impact_integrity] complete"
+            """
+            verify_tag = "[impact_integrity] complete"
+        elif 'sp' in node_desc['roles']:
             cmd = """
 bash << 'OUTER'
 cat << 'EOF' | sudo tee /opt/integrity-impact-sp.sh > /dev/null
@@ -265,7 +274,7 @@ OUTER
         if verbose:
             print(f"stdout={stdout}")
             print(f"stderr={stderr}")
-            print(f"exit_status={stderr}")
+            print(f"exit_status={exit_status}")
         result["cmd"] = cmd
         result["stdout"] = stdout
         result["stderr"] = stderr

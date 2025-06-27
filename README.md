@@ -181,16 +181,17 @@ Next, you can emulate the simulated logins:
 $ ./emulate-logins.py  post-deploy-output.json logins.json 
 ```
 
-If you want to do "fast" emulation for debugging, you can add the ``--fast-debug`` option.  You may also want to tell python not to buffer the output and redirect all output to a file:
+If you want to do "fast" emulation for debugging, you can add the ``--fast-debug`` option.  
+You may also want to tell python not to buffer the output and redirect all output to a file:
 
 ```
-$ python -u ./emulate-logins.py  post-deploy-output.json logins.json  --fast-debug 2>&1 | stdbuf -o0 -e0 tee workflow.log
+$ PYTHONUNBUFFERED=1 ./emulate-logins.py  post-deploy-output.json logins.json  --fast-debug 2>&1 | stdbuf -o0 -e0 tee workflow.log
 ```
 
 If you want to specify a seed for more deterministic emulation results:
 
 ```
-$ python -u ./emulate-logins.py  post-deploy-output.json logins.json  --fast-debug --seed 42 2>&1 |tee workflow.log
+$ ./emulate-logins.py  post-deploy-output.json logins.json  --seed 42 
 ```
 
 If you would like to replay the same set of configuration parameters from logins.json, i.e., same users and relative login times, 
@@ -198,7 +199,12 @@ specify the --rebase-time option. This will calculate a time offset to add to al
 are performed relative to the current timestamp. 
 
 ```
-$ python -u ./emulate-logins.py  post-deploy-output.json logins.json  --rebase-time 2>&1 | stdbuf -o0 -e0 tee workflow.log
+$ ./emulate-logins.py  post-deploy-output.json logins.json  --rebase-time 
+```
+
+Of course you can combine these:
+```
+$ PYTHONUNBUFFERED=1 ./emulate-logins.py  post-deploy-output.json logins.json  --seed 42 --rebase-time --fast-debug 2>&1 | stdbuf -o0 -e0 tee workflow.log
 ```
 
 You may optionally run `monitor_confidentiality.py` during emulation to track ongoing privileged access across the testbed.  See the section on Confidentiality.
@@ -367,41 +373,61 @@ This aspect is now handled by the castle-vm `gradlew` command.  See documentatio
 After you run a workflow (and assuming you redirected output to `workflow.log`), you can compute availability metrics:
 
 ```
-./compute_metrics.sh workflow.log
+./compute-metrics.py workflow.log
 ```
 
 The output should look like:
 
 ```
-=== Metrics for ssh linux
-SSH-linux: availability=1.0000
-SSH-linux: num_started=5
-SSH-linux: num_success=4
-SSH-linux: num_err=0
-
-=== Metrics for ssh windows
-SSH-windows: availability=1.0000
-SSH-windows: num_started=2
-SSH-windows: num_success=2
-SSH-windows: num_err=0
-
-=== Metrics for ssh windows and linux
-SSH: availability=1.0000
-SSH: num_started=7
-SSH: num_success=6
-SSH: num_err=0
-
-=== Metrics for Moodle
-Workflow Moodle: availability=.8000
-Workflow Moodle: num_started=5
-Workflow Moodle: num_success=4
-Workflow Moodle: num_err=1
-
-=== Metrics for Moodle by steps
-Workflow Moodle steps: availability=.9642
-Workflow Moodle steps: num_started=28
-Workflow Moodle steps: num_success=27
-Workflow Moodle steps: num_err=0
+{
+  "metric_type": "workflow_summary",
+  "report": {
+    "Moodle": {
+      "workflow": {
+        "availability_average": 0.8182,
+        "availability_total": 11,
+        "availability_success": 9,
+        "availability_error": 1,
+        "integrity_average": 0.1,
+        "integrity_total": 10,
+        "integrity_success": 1,
+        "integrity_failure": 9
+      },
+      "steps": {
+        "availability_average": 0.973,
+        "availability_total": 37,
+        "availability_success": 36,
+        "availability_error": 0,
+        "integrity_average": 0.1111,
+        "integrity_total": 36,
+        "integrity_success": 4,
+        "integrity_failure": 32
+      }
+    },
+    "ShibbolethBrowser": {
+      "workflow": {
+        "availability_average": 0.0,
+        "availability_total": 14,
+        "availability_success": 0,
+        "availability_error": 14,
+        "integrity_average": 0.2143,
+        "integrity_total": 14,
+        "integrity_success": 3,
+        "integrity_failure": 11
+      },
+      "steps": {
+        "availability_average": 0.5,
+        "availability_total": 6,
+        "availability_success": 3,
+        "availability_error": 11,
+        "integrity_average": 0.0,
+        "integrity_total": 14,
+        "integrity_success": 0,
+        "integrity_failure": 14
+      }
+    }
+  }
+}
 ```
 
 ## Computing additional metrics
@@ -416,9 +442,15 @@ Workflow statistics are emitted as the emulation runs. They are of the form:
 {"timestamp": "2024-12-13T16:39:08.408369", "workflow_name": "Moodle", "status": "success", "message": "Step BrowseCourse:RAMPART successful", "hostname": "linep1", "pid": 13828, "step_name": "BrowseCourse:RAMPART"}
 ```
 
-There are two kinds of stats collected: (1) workflow-level, (2) workflow but at the step level. The step-level workflows have a `step_name` defined, whereas the workflow level stats do not.
+There are two kinds of stats collected: (1) workflow-level, (2) workflow but at the 
+step level. The step-level workflows have a `step_name` defined, whereas 
+the workflow level stats do not.
 
-To go beyond the availability metrics reported by `compute_metrics.sh`, highly recommend to write a python program to ingest all the JSON-formatted stats in the log file, e.g., in `workflow.log`
+To go beyond the integrity and availability metrics reported by `compute-metrics.py`, we 
+highly recommend to write a python program to ingest all the JSON-formatted stats 
+in the log file, e.g., in `workflow.log`.  We provide post-process-logs.py as an exemplar 
+of how to process logs.  This script processes the logs by timestamp into, for example,
+60 seconds bins and prints stats for each bin.
 
 
 ### Reproducibility & Reuse
