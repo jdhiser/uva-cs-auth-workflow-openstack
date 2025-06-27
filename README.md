@@ -108,8 +108,6 @@ Parses and normalizes logs from across the environment:
 ✅ *Final output: Cleaned datasets, metadata, and evaluation artifacts.*
 
 
-
-
 ### Site Configuration
 
 Written in python and assumes to be running on Linux with ssh access to the nodes created, make sure you have dependencies setup properly:
@@ -284,7 +282,7 @@ This helps quantify the effectiveness of confidentiality impacts.
 
 #### Example Usage
 ```bash
-$ python monitor_confidentiality.py \
+$ ./monitor_confidentiality.py \
     --post-deploy-output post-deploy-output.json \
     --time-interval 300 \
     --output impacts.jsonl \
@@ -296,6 +294,20 @@ This will:
 - Attempt login using the known backdoor credentials
 - Evaluate if sudo access is allowed
 - Append JSON-formatted result summaries to `impacts.jsonl` every 5 minutes
+
+You probably want to capture the output to a file and disable buffering if you're watching
+the script manually:
+
+```bash
+$ PYTHONUNBUFFERED=1 ./monitor_confidentiality.py \
+    --post-deploy-output post-deploy-output.json \
+    --time-interval 300 \
+    --output impacts.jsonl \
+    --verbose \
+    | stdbuf -e0 -o0 tee confidentiality-scores.log
+```
+
+
 
 #### Output Format
 Each log entry includes:
@@ -490,8 +502,8 @@ provisioning, and modular simulation and monitoring phases.
 
 - Split monitor from emulation:
   ```bash
-  $ python monitor_confidentiality.py --output impacts-run1.jsonl &
-  $ python emulate-logins.py post-deploy-output.json login-plan.json
+  $ ./monitor_confidentiality.py --output impacts-run1.jsonl &
+  $ ./emulate-logins.py post-deploy-output.json login-plan.json
   ```
 
 - Use consistent seeds for reproducibility:
