@@ -97,7 +97,7 @@ Modules that simulate security-impacting behaviors:
 
 ### 7. **Log Aggregation & Analysis**
 
-#### `post_process_logs`
+#### `compute-metrics` and `post-process-logs
 
 Parses and normalizes logs from across the environment:
 

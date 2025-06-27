@@ -244,7 +244,7 @@ def emulate_login(number, login, user_data, built, seed, logfile):
         "exit_status": [status1, status2]
     }
 
-    record_log(logfile, new_output)
+    #record_log(logfile, new_output)
     log_ssh("success", msg, targ_ip, stdout1+stderr1+stdout2+stderr2, "connect")
     log_ssh("success", msg, targ_ip, stdout1+stderr1+stdout2+stderr2)
     login_results.append(new_output)
