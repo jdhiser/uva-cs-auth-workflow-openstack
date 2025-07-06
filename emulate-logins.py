@@ -1,7 +1,9 @@
 #!/usr/bin/env python
 
+from apscheduler.executors.pool import ThreadPoolExecutor
+from apscheduler.schedulers.background import BackgroundScheduler
+from faker import Faker
 import threading
-import traceback
 import time
 import sys
 import os
@@ -16,16 +18,13 @@ from typing import List, Dict, Any, Optional
 # Remove Paramiko's default handlers
 for name in ["paramiko", "paramiko.transport", "paramiko.auth_handler"]:
     plogger = logging.getLogger(name)
-    plogger.setLevel(logging.WARN)  
-    plogger.handlers.clear()       
+    plogger.setLevel(logging.WARN)
+    plogger.handlers.clear()
     plogger.propagate = False
 
 # faker stuff
-from faker import Faker
 
 # scheduler stuff.
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.executors.pool import ThreadPoolExecutor
 
 # configure logging
 logging.basicConfig(
@@ -51,7 +50,6 @@ timestamp_format = '%Y-%m-%d %H:%M:%S.%f'
 file_lock = threading.Lock()
 
 
-
 def contains_bad_term(lines: List[str]) -> bool:
     """
     Check if any line in a list of strings contains suspicious terms.
@@ -63,6 +61,7 @@ def contains_bad_term(lines: List[str]) -> bool:
         bool: True if 'pwned' or 'pwnd' is found (case insensitive), False otherwise.
     """
     return any("pwned" in line.lower() or "pwnd" in line.lower() for line in lines)
+
 
 def record_log(logfile: Optional[str], new_record: Dict[str, Any]) -> None:
     """
@@ -92,8 +91,7 @@ def record_log(logfile: Optional[str], new_record: Dict[str, Any]) -> None:
             file.flush()
 
 
-def log_ssh(status: str, message: str, host_ip: str, ssh_output: List[str], step_name:Optional[str] = None) -> None:
-
+def log_ssh(status: str, message: str, host_ip: str, ssh_output: List[str], step_name: Optional[str] = None) -> None:
     """
     Log an SSH connection status message in JSON format to stdout.
 
@@ -115,7 +113,7 @@ def log_ssh(status: str, message: str, host_ip: str, ssh_output: List[str], step
         "host_ip": host_ip,
     }
     if status != "start":
-        log_entry["integrity"] =  0 if contains_bad_term(ssh_output) else 1
+        log_entry["integrity"] = 0 if contains_bad_term(ssh_output) else 1
 
     if step_name is not None:
         log_entry["step_name"] = step_name
@@ -126,9 +124,11 @@ def get_target_node(built, node_name):
     """Retrieve a node definition from the deployment metadata."""
     return next(filter(lambda node: node['name'] == node_name, built['deployed']['nodes']))
 
+
 def get_user_credentials(user_data, username):
     """Fetch a user entry matching the given username."""
     return next(filter(lambda user: user['user_profile']['username'] == username, user_data))
+
 
 def apply_fake_fromip(dev, mac, from_ip):
     """Optionally set up a dummy network interface with spoofed MAC and IP."""
@@ -143,10 +143,12 @@ def apply_fake_fromip(dev, mac, from_ip):
     del_command = f'sudo ip link delete {dev} type dummy'
     return del_command
 
+
 def run_windows_login(shell, username, password):
     """Run a simple echo command to simulate login on Windows."""
     cmd = f'echo "{username}\n{password}"'
     return shell.execute_powershell(cmd)
+
 
 def run_linux_login(shell, username, password, duration, seed):
     """Simulate a Linux login using the pyhuman automation script."""
@@ -158,6 +160,7 @@ def run_linux_login(shell, username, password, duration, seed):
         f'--seed {seed} --extra passfile {passfile}'
     )
     return shell.execute_cmd(cmd, verbose=True)
+
 
 def emulate_login(number, login, user_data, built, seed, logfile):
     """
@@ -198,10 +201,10 @@ def emulate_login(number, login, user_data, built, seed, logfile):
     shell = None
     del_command = None
 
-    stdout1=[]
-    stdout2=[]
-    stderr1=[]
-    stderr2=[]
+    stdout1 = []
+    stdout2 = []
+    stderr1 = []
+    stderr2 = []
     try:
         # Apply fake IP if configured
         if use_fake_fromip:
@@ -227,9 +230,9 @@ def emulate_login(number, login, user_data, built, seed, logfile):
     except KeyboardInterrupt:
         logger.warning(f"Aborting due to KeyboardInterrupt: {msg}")
         raise
-    except Exception as e:
-        log_ssh("error", msg, targ_ip, stdout1+stderr1+stdout2+stderr2, "connect")
-        log_ssh("error", msg, targ_ip, stdout1+stderr1+stdout2+stderr2)
+    except Exception:
+        log_ssh("error", msg, targ_ip, stdout1 + stderr1 + stdout2 + stderr2, "connect")
+        log_ssh("error", msg, targ_ip, stdout1 + stderr1 + stdout2 + stderr2)
         logger.exception(f"FAILED CONNECTION {'windows' if is_windows else 'linux'}: {msg}")
     finally:
         if del_command:
@@ -244,9 +247,9 @@ def emulate_login(number, login, user_data, built, seed, logfile):
         "exit_status": [status1, status2]
     }
 
-    #record_log(logfile, new_output)
-    log_ssh("success", msg, targ_ip, stdout1+stderr1+stdout2+stderr2, "connect")
-    log_ssh("success", msg, targ_ip, stdout1+stderr1+stdout2+stderr2)
+    # record_log(logfile, new_output)
+    log_ssh("success", msg, targ_ip, stdout1 + stderr1 + stdout2 + stderr2, "connect")
+    log_ssh("success", msg, targ_ip, stdout1 + stderr1 + stdout2 + stderr2)
     login_results.append(new_output)
 
     # Reset variables for memory hygiene
@@ -265,6 +268,7 @@ def load_json_file(name: str):
     """
     with open(name) as f:
         return json.load(f)
+
 
 def get_earliest_login(logins):
     """
@@ -293,6 +297,7 @@ def get_earliest_login(logins):
                 earliest = login_start
 
     return earliest
+
 
 def flatten_logins(logins, rebase_time=False):
     """
@@ -355,7 +360,7 @@ def schedule_logins(logins_file, setup_output_file, logfile=None, fast_debug=Fal
     flat_logins = flatten_logins(logins_file['logins'], rebase_time)
 
     # Configure the scheduler with a large thread pool to handle concurrency
-    executors = { 'default': ThreadPoolExecutor(2000) }
+    executors = {'default': ThreadPoolExecutor(2000)}
     scheduler = BackgroundScheduler(executors=executors)
 
     # Use provided seed or fallback to stored/random
@@ -469,7 +474,7 @@ def main():
 
     return 0
 
+
 # Standard CLI entry point
 if __name__ == '__main__':
     sys.exit(main())
-

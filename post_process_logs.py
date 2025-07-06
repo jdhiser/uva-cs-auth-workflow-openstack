@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 import argparse
 import pandas as pd
 import json
@@ -20,12 +18,9 @@ def process_file(input_file, bin_period):
     # Read and aggregate data from all input ndjson files
     with open(input_file, 'r') as f:
         for line in f:
-            try:
-                record = json.loads(line)
-                record['timestamp'] = datetime.fromisoformat(record['timestamp'])
-                all_data.append(record)
-            except Exception:
-                pass
+            record = json.loads(line)
+            record['timestamp'] = datetime.fromisoformat(record['timestamp'])
+            all_data.append(record)
 
     # Sort all_data by timestamp to determine the dynamic start_time
     all_data.sort(key=lambda x: x['timestamp'])

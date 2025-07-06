@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 
-import threading
 import time
 import json
 from datetime import datetime
 from shell_handler import ShellHandler
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import sys
 
 # Global verbose flag
 verbose = False
+
 
 def get_node_score(node: dict, domain_leaders: dict) -> tuple:
     """
@@ -59,6 +58,7 @@ def get_node_score(node: dict, domain_leaders: dict) -> tuple:
 
     return node_name, result
 
+
 def compute_scores(built_output: dict) -> dict:
     """
     Compute passwordless sudo scores for all nodes in parallel.
@@ -80,6 +80,7 @@ def compute_scores(built_output: dict) -> dict:
             scores[node_name] = result
 
     return scores
+
 
 def log_scores(scores: dict, output_file: str) -> None:
     """
@@ -126,6 +127,7 @@ def log_scores(scores: dict, output_file: str) -> None:
     if verbose:
         print(f"Logged scores at {result['timestamp']}: {scores}")
 
+
 def sudo_access_monitor_loop(built_output: dict, timestep: int, output_file: str) -> None:
     """
     Loop to periodically compute and log scores.
@@ -143,6 +145,7 @@ def sudo_access_monitor_loop(built_output: dict, timestep: int, output_file: str
             time.sleep(timestep)
     except KeyboardInterrupt:
         print("Exiting monitor loop.")
+
 
 def main() -> None:
     """
@@ -163,6 +166,7 @@ def main() -> None:
         built_output = json.load(f)
 
     sudo_access_monitor_loop(built_output, args.time_interval, args.output)
+
 
 if __name__ == '__main__':
     main()

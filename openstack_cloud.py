@@ -19,7 +19,7 @@ class OpenstackCloud:
         self.network_name = None
         self.project_id = os.environ.get('OS_PROJECT_ID')
         self.project_name = os.environ.get('OS_PROJECT_NAME')
-        self.verify= 'OS_CACERT' in os.environ
+        self.verify = 'OS_CACERT' in os.environ
         self.enterprise_url = None
 
         self.sess = self.get_session()

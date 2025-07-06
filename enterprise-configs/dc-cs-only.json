@@ -1,0 +1,29 @@
+{
+	"nodes":
+	[
+		{ 
+			"name": "dc1",
+			"os": "win2k22",
+			"domain": "castle",
+			"roles": [ "domain_controller_leader", "windows" ]
+		},
+		{
+			"name": "dc2" ,
+			"os": "win2k22",
+			"domain": "castle",
+			"roles": [ "domain_controller", "windows" ]
+		},
+		{
+			"name": "root-cert-server" ,
+			"os": "win2k22",
+			"domain": "castle",
+			"roles": [ "ad-root-certificate-server", "windows" ]
+		},
+		{
+			"name": "sub-cert-server" ,
+			"os": "win2k22",
+			"domain": "castle",
+			"roles": [ "ad-subordinate-certificate-server", "windows" ]
+		}
+	]
+}

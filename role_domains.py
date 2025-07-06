@@ -14,7 +14,7 @@ def deploy_forest(cloud_config, name, control_ipv4_addr, game_ipv4_addr, passwor
 
     user = 'Administrator'
     domain_name = domain + '.' + cloud_config['enterprise_url']
-    print("Setting safe-mode password for domain to " + password)
+    print("  Setting safe-mode password for domain to " + password)
 
     cmd = (
         "reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\TimeProviders\\NtpServer /v Enabled /t REG_DWORD /d 1 /f; "
@@ -118,7 +118,7 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
     game_leader_ip = leader_details['game_addr'][0]
     control_leader_ip = leader_details['control_addr'][0]
     print('  domain-controller leader (control): ' + control_leader_ip)
-    print('  domain-controller leader: (game)' + game_leader_ip)
+    print('  domain-controller leader (game): ' + game_leader_ip)
     print('  domain-controller password: ' + leader_admin_password)
 
     pycmd = (
@@ -272,7 +272,7 @@ def join_domain(obj):
         print("  Domain controller IPs (game):" + str(game_leader_addrs))
 
     if iswindows:
-        print("Windows join-domain for node " + name)
+        print("  Windows join-domain for node " + name)
         return join_domain_windows(name, leader_admin_password, control_ipv4_addr, game_ipv4_addr, domain_ips, fqdn_domain_name, domain_name, password)
     elif islinux:
         print("Linux join-domain for node " + name)
@@ -591,3 +591,319 @@ def deploy_users(users, built):
         deploy_users['add_users'][domain] = {"cmd": cmd, "stdout": stdout, "stderr": stderr, "exit_status": exit_status}
 
     return deploy_users
+
+
+def setup_root_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_details, cloud_config, enterprise, enterprise_built):
+    """
+    setup_root_ca
+
+    Installs and configures an Enterprise Root CA on a Windows domain controller.
+
+    Parameters:
+    - node: dict - Node definition including 'name', 'domain', and 'roles'
+    - control_ipv4_addr: str - IPv4 address used for SSH or WinRM access to the node
+    - game_ipv4_addr: str - IPv4 address used to reach the node within the simulation/game network
+    - password: str - Local administrator password for the target node
+    - leader_details: dict - Contains 'admin_pass' and 'game_addr' for the domain leader
+    - cloud_config: dict - Contains cloud-wide config options including 'enterprise_url'
+    - enterprise: unused, retained for signature compatibility
+    - enterprise_built: unused, retained for signature compatibility
+
+    Returns:
+    - dict: stdout, stderr, and exit_status from the shell command
+    """
+
+    import paramiko
+    from shell_handler import ShellHandler
+
+    name = node['name']
+    domain_name = node['domain']
+    enterprise_name = cloud_config['enterprise_url']
+    fqdn_domain_name = domain_name + '.' + enterprise_name
+    leader_admin_password = leader_details['admin_pass']
+    game_leader_addrs = leader_details['game_addr']
+    roles = node['roles']
+    iswindows = len(list(filter(lambda role: 'windows' == role, roles))) == 1
+
+    if not iswindows:
+        raise RuntimeError("Cannot install AD CS on non-Windows systems")
+
+    join_domain_results = join_domain_windows(
+        name,
+        leader_admin_password,
+        control_ipv4_addr,
+        game_ipv4_addr,
+        str(game_leader_addrs).replace("[", "").replace("]", "").replace("'", "\""),
+        fqdn_domain_name,
+        domain_name,
+        password
+    )
+    print(f"  Installing Root AD CS for node {name}")
+
+    # Construct the PowerShell command as a multiline string
+    adcs_cmd = """
+        Install-WindowsFeature AD-Domain-Services
+        Get-ADDomain
+        Install-WindowsFeature ADCS-Cert-Authority
+        Import-Module ADCSDeployment
+        Install-AdcsCertificationAuthority -CAType EnterpriseRootCA `
+            -CryptoProviderName 'RSA#Microsoft Software Key Storage Provider' `
+            -KeyLength 2048 `
+            -HashAlgorithmName SHA256 `
+            -ValidityPeriod Years -ValidityPeriodUnits 5 `
+            -Force
+        Write-Host 'AD CS RootCA installation completed.'
+        """
+
+    # Create a shell session to the target machine
+    shell = ShellHandler(control_ipv4_addr, domain_name + '\\' + 'administrator', leader_admin_password)
+
+    # Execute the multi-line PowerShell command
+    try:
+        adcs_stdout, adcs_stderr, adcs_exit_status = shell.execute_powershell_multiline(
+            adcs_cmd, verbose=verbose, filename='install-rootca.ps1')
+    except paramiko.ssh_exception.AuthenticationException as e:
+        raise RuntimeError(f"Authentication failed: {e}")
+
+    # Verify Root CA
+    verify_cmd = """
+        $max = 36
+        $i = 0
+        while ($i -lt $max) {
+            try {
+                $output = certutil -CAinfo | Out-String
+                Write-Output $output
+                if ($output -match 'CertUtil: -CAInfo command completed successfully') {
+                    Write-Host '  Verified RootCA was setup properly'
+                    exit 0
+                }
+            } catch {
+                Write-Error "Error running certutil: $_"
+            }
+            Start-Sleep -Seconds 5
+            $i += 1
+        }
+        Write-Error 'AD CS installation issue: could not verify CA certificate within timeout.'
+        exit 1
+        """
+
+    try:
+        verify_stdout, verify_stderr, verify_exit_status = shell.execute_powershell_multiline(
+            verify_cmd, verbose=verbose, filename='verify-rootca.ps1')
+    except Exception as e:
+        raise RuntimeError(f"Failed to verify AD CS: {e}")
+
+    if 'CertUtil: -CAInfo command completed successfully' not in str(verify_stdout):
+        print(f"adcs_stdout={adcs_stdout}")
+        print(f"adcs_stderr={adcs_stderr}")
+        print(f"adcs_exit_status={adcs_exit_status}")
+        print(f"verify_stdout={verify_stdout}")
+        print(f"verify_stderr={verify_stderr}")
+        print(f"verify_exit_status={verify_exit_status}")
+        raise RuntimeError("AD CS installation issue, could not verify CA certificate.")
+
+    print("  Verified RootCA was setup properly")
+
+    return {
+        "install_adcs": {
+            "cmd": adcs_cmd,
+            "join_domain_results": join_domain_results,
+            "stdout": adcs_stdout,
+            "stderr": adcs_stderr,
+            "exit_status": adcs_exit_status,
+            "verify_stdout": verify_stdout,
+            "verify_stderr": verify_stderr,
+            "verify_exit_status": verify_exit_status
+        }
+    }
+
+
+def setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_details, cloud_config, enterprise, enterprise_built):
+    """
+    setup_subordinate_ca
+
+    Prepares a Subordinate CA by installing the necessary ADCS role.
+
+    Parameters:
+    - node: dict - Node definition including 'name', 'domain', and 'roles'
+    - control_ipv4_addr: str - IPv4 address used for SSH or WinRM access to the node
+    - game_ipv4_addr: str - IPv4 address used to reach the node within the simulation/game network
+    - password: str - Local administrator password for the target node
+    - leader_details: dict - Contains 'admin_pass' and 'game_addr' for the domain leader
+    - cloud_config: dict - Contains cloud-wide config options including 'enterprise_url'
+    - enterprise: unused, retained for signature compatibility
+    - enterprise_built: unused, retained for signature compatibility
+
+    Returns:
+    - dict: stdout, stderr, and exit_status from the shell command
+    """
+
+    import paramiko
+    from shell_handler import ShellHandler
+
+    name = node['name']
+    domain_name = node['domain']
+    enterprise_name = cloud_config['enterprise_url']
+    fqdn_domain_name = domain_name + '.' + enterprise_name
+    leader_admin_password = leader_details['admin_pass']
+    game_leader_addrs = leader_details['game_addr']
+    roles = node['roles']
+    iswindows = len(list(filter(lambda role: 'windows' == role, roles))) == 1
+
+    if not iswindows:
+        raise RuntimeError("Cannot install AD CS on non-Windows systems")
+
+    join_domain_results = join_domain_windows(
+        name,
+        leader_admin_password,
+        control_ipv4_addr,
+        game_ipv4_addr,
+        str(game_leader_addrs).replace("[", "").replace("]", "").replace("'", "\""),
+        fqdn_domain_name,
+        domain_name,
+        password
+    )
+    print(f"  Installing Subordinate AD CS for node {name}")
+
+    cmd = """
+        Install-WindowsFeature AD-Domain-Services
+        Get-ADDomain
+        Install-WindowsFeature ADCS-Cert-Authority
+        Import-Module ADCSDeployment
+        Install-AdcsCertificationAuthority -CAType EnterpriseSubordinateCA -Force
+        Write-Host 'AD CS SubordinateCA request created.'
+    """
+
+    shell = ShellHandler(control_ipv4_addr, domain_name + '\\' + 'administrator', leader_admin_password)
+    try:
+        adcs_stdout, adcs_stderr, adcs_exit_status = shell.execute_powershell_multiline(
+            cmd, filename="install-subca.ps1", verbose=verbose)
+    except paramiko.ssh_exception.AuthenticationException as e:
+        raise RuntimeError(f"Authentication failed: {e}")
+
+    # Verify Subordinate CA role installed
+    verify_cmd = "Get-WindowsFeature ADCS-Cert-Authority"
+    try:
+        verify_stdout, verify_stderr, verify_exit_status = shell.execute_powershell(verify_cmd, verbose=verbose)
+    except Exception as e:
+        raise RuntimeError(f"Failed to verify AD CS: {e}")
+
+    if 'Installed' not in str(verify_stdout):
+        raise RuntimeError("Could not verify Subordinate AD CS installation completed.")
+    print("  Verified SubordinateCA was setup properly")
+
+    return {
+        "install_adcs": {
+            "cmd": cmd,
+            "join_domain_results": join_domain_results,
+            "stdout": adcs_stdout,
+            "stderr": adcs_stderr,
+            "exit_status": adcs_exit_status,
+            "verify_stdout": verify_stdout,
+            "verify_stderr": verify_stderr,
+            "verify_exit_status": verify_exit_status
+        }
+    }
+
+
+# Existing link_subordinate_to_root() function retained below
+def link_subordinate_to_root(root_info, sub_info):
+    """
+    Links a subordinate CA to its root CA by signing the subordinate's request on the root CA
+    and installing the returned certificate on the subordinate.
+
+    Parameters:
+    - root_info: dict with 'control_addr' and admin password of root CA
+    - sub_info: dict with 'node', 'control_ip', 'password', etc.
+
+    Returns:
+    - dict with stdout/stderr/exit_status from the final install step
+    """
+
+    import os
+    from shell_handler import ShellHandler
+
+    sub_node = sub_info['node']
+    sub_name = sub_node['name']
+    sub_ip = sub_info['control_ip']
+    domain = sub_info['domain']
+    enterprise_url = sub_info['enterprise_url']
+
+    sub_req_file = f"C:\\{sub_name}.{domain}.{enterprise_url}_{domain}-{sub_name.upper()}-CA.req"
+
+    root_ip = root_info['control_addr']
+    root_password = root_info['admin_pass']
+
+    tmp_dir = "tmp"
+    os.makedirs(tmp_dir, exist_ok=True)
+
+    local_req = os.path.join(tmp_dir, f"{sub_name}.req")
+    local_cer = os.path.join(tmp_dir, f"{sub_name}.cer")
+
+    remote_req = f"C:\\tmp\\{sub_name}.req"
+    remote_cer = f"C:\\tmp\\{sub_name}.cer"
+
+    sub_shell = ShellHandler(sub_ip, f"{domain}\\Administrator", root_password)
+    root_shell = ShellHandler(root_ip, f"{domain}\\Administrator", root_password)
+
+    # Ensure C:\tmp exists on both systems
+    sub_shell.execute_cmd("mkdir C:\\tmp", verbose=verbose)
+    root_shell.execute_cmd("mkdir C:\\tmp", verbose=verbose)
+
+    # Step 1: Fetch subordinate .req
+    sub_shell.get_file(sub_req_file, local_req)
+
+    # Step 2: Send .req to root CA
+    root_shell.put_file(local_req, remote_req)
+
+    # Step 3: Submit request on root CA and save .cer
+    sign_cmd = (
+        f"certreq -submit -q -attrib \"CertificateTemplate:SubCA\" "
+        f"\"{remote_req}\" \"{remote_cer}\""
+    )
+    stdout, stderr, exit_status = root_shell.execute_powershell(sign_cmd, verbose=verbose)
+
+    # Step 4: Fetch signed .cer
+    root_shell.get_file(remote_cer, local_cer)
+
+    # Step 5: Send cert to subordinate
+    sub_shell.put_file(local_cer, "C:\\tmp\\subca.cer")
+
+    # Step 6: Finalize subordinate CA install
+    install_cmd = (
+        "certutil -installcert C:\\tmp\\subca.cer;"
+        "Start-Service certsvc"
+
+    )
+    install_out, install_err, install_status = sub_shell.execute_powershell(install_cmd, verbose=verbose)
+
+    # Verify Subordinate CA
+    verify_cmd = "certutil -CAinfo"
+    try:
+        verify_out, verify_err, verify_exit_status = sub_shell.execute_powershell(verify_cmd, verbose=verbose)
+    except Exception as e:
+        raise RuntimeError(f"Failed to verify AD CS: {e}")
+
+    if 'CertUtil: -CAInfo command completed successfully' not in str(verify_out):
+        raise RuntimeError("AD CS installation issue, could not verify CA certificate.")
+    print("  Verified Subordinate CA was setup properly")
+
+    return {
+        "link_subordinate_to_root": {
+            "sign_cert": {
+                "stdout": stdout,
+                "stderr": stderr,
+                "exit_status": exit_status
+            },
+            "install_cert": {
+                "stdout": install_out,
+                "stderr": install_err,
+                "exit_status": install_status
+            },
+            "verifyl_cert": {
+                "stdout": verify_out,
+                "stderr": verify_err,
+                "exit_status": verify_exit_status
+            }
+        }
+    }

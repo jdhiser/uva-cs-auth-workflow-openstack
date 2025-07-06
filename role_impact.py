@@ -112,7 +112,6 @@ def impact_availability(node: dict, enterprise: dict) -> dict:
     return result
 
 
-
 #
 # impact_integrity - Simulate an integrity-related impact on a node.
 # This function applies different integrity modifications depending on the node's role:
@@ -151,7 +150,7 @@ def impact_integrity(node: dict, enterprise: dict) -> dict:
     try:
         shell = ShellHandler(control_ip, user, password, verbose=verbose)
         if 'fileserver' in node_desc['roles']:
-        
+
             cmd = """
 sudo bash -x << 'EOF' | sudo tee /opt/integrity-impact-fs.sh > /dev/null
 

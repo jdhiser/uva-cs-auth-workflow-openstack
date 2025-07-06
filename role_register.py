@@ -18,7 +18,7 @@ def do_rename_adapter(control_ip: str, user: str, password: str, rename_ip: str,
         shell = ShellHandler(control_ip, user, password, verbose=verbose)
         stdout, stderr, exit_status = shell.execute_powershell(rename_cmd)
     except paramiko.ssh_exception.AuthenticationException:
-        print("Could not connect with credentials to rename adapter.  Already registered?")
+        print("Could not connect with credentials to rename adapter.  Already domain-joined?")
         return {}
 
     return {"stdout": stdout, "stderr": stderr, "exit_status": exit_status}
@@ -45,7 +45,7 @@ def register_windows_instance(obj):
         shell = ShellHandler(control_ipv4_addr, user, password, verbose=verbose)
         stdout, stderr, exit_status = shell.execute_powershell(cmd)
     except paramiko.ssh_exception.AuthenticationException:
-        print("Could not connect with credentials to windows, already registered?")
+        print("Could not connect with credentials to register windows, already domain-joined?")
         return {}
 
     return {

@@ -1,6 +1,8 @@
 import paramiko
 import sys
 import socket
+import os
+import uuid
 
 
 class ShellHandler:
@@ -94,6 +96,60 @@ class ShellHandler:
             sys.exit(1)
         return self.execute_cmd(new_cmd, verbose=verbose)
 
-    def put_file(self, src_filename: str, dst_filename: str, verbose: bool = False):
+    def put_file(self, src_filename: str, dst_filename: str):
         self.sftp.put(src_filename, dst_filename)
         return
+
+    def get_file(self, src_filename: str, dst_filename: str):
+        self.sftp.get(src_filename, dst_filename)
+        return
+
+    def execute_powershell_multiline(self, cmd, verbose=False, exit=False, filename: str = None):
+        """
+        Executes a multi-line PowerShell script on the remote Windows host
+        by uploading it to C:\\tmp and executing it via powershell -File.
+
+        Parameters:
+        - cmd: str - Multi-line PowerShell script content
+        - verbose: bool - If True, prints script content and execution progress
+        - exit: bool - If True, terminates Python on failure
+        - filename: str - Optional name to use for both local and remote script
+
+        Returns:
+        - tuple: (stdout_lines, stderr_lines, exit_status)
+        """
+
+        if not os.path.exists('./tmp'):
+            os.makedirs('./tmp', exist_ok=True)
+
+        script_name = filename if filename else f'ps_script_{uuid.uuid4().hex}.ps1'
+        tmp_local_path = os.path.join('./tmp', script_name)
+        tmp_remote_path = f'C:\\tmp\\{script_name}'
+
+        with open(tmp_local_path, 'w', encoding='utf-8') as f:
+            f.write(cmd)
+
+        if verbose or self.verbose:
+            print(f"Uploading PowerShell script to: {tmp_remote_path}")
+            print(f"Script contents:\n{cmd}")
+
+        # Ensure C:\tmp exists on the remote host
+        self.execute_cmd('powershell -Command "New-Item -Path C:\\tmp -ItemType Directory -Force"', verbose=verbose)
+
+        # Overwrite the file in C:\tmp
+        self.put_file(tmp_local_path, tmp_remote_path)
+        os.remove(tmp_local_path)
+
+        ps_exec_cmd = f'powershell -ExecutionPolicy Bypass -File "{tmp_remote_path}"'
+        stdout, stderr, exit_code = self.execute_cmd(ps_exec_cmd, verbose=verbose)
+
+        try:
+            self.sftp.remove(tmp_remote_path)
+        except Exception as cleanup_err:
+            if verbose or self.verbose:
+                print(f"Warning: failed to delete remote script: {cleanup_err}")
+
+        if exit:
+            sys.exit(1)
+
+        return stdout, stderr, exit_code

@@ -10,6 +10,7 @@ import role_human
 import role_moodle
 import role_fs
 import argparse
+import os
 from datetime import datetime
 from joblib import Parallel, delayed
 
@@ -47,7 +48,6 @@ def register_windows(enterprise, enterprise_built, only):
     access_list = []
     windows_nodes = list(filter(lambda x: 'windows' in x['roles'], enterprise['nodes']))
     windows_nodes = [x for x in windows_nodes if only is None or x['name'] in only]
-    print(only)
     for node in windows_nodes:
         name = node['name']
         print("  Registering windows on " + name)
@@ -253,33 +253,41 @@ def setup_moodle_idps_part2(cloud_config, enterprise, enterprise_built, only):
 
 
 def deploy_domain_controllers(cloud_config, enterprise, enterprise_built, only):
+    """
+    Sets up Active Directory forests, domain controllers, and certificate servers (root and subordinate).
+    Also links subordinate certificate authorities to their respective root CAs.
+    """
+
+    os.makedirs("tmp", exist_ok=True)
+
     ret = {}
-    leaders = list(filter(lambda x: 'domain_controller_leader' in x['roles'], enterprise['nodes']))
     leader_details = {}
-    for leader in leaders:
+
+    # Step 1: Deploy AD forests (root DCs)
+    forest_leaders = list(filter(lambda x: 'domain_controller_leader' in x['roles'], enterprise['nodes']))
+    for leader in forest_leaders:
         name = leader['name']
         domain = leader['domain']
-        print("Setting up domain controller with new forest on " + name + " for domain " + domain)
+        print(f"Setting up domain controller with new forest on {name} for domain {domain}")
         control_ipv4_addr, game_ipv4_addr, password = extract_creds(enterprise_built, name)
-        # access_list.append({"name": name})
-        # access_list.append({"name": name, "addr": ipv4_addr})
         if only is None or name in only:
             results = role_domains.deploy_forest(cloud_config, name, control_ipv4_addr, game_ipv4_addr, password, domain)
         else:
             results = {"msg": "skipping setup of domain controller leader as requested"}
         leader_details[domain] = {
-            "name": str(name),
+            "name": name,
             "control_addr": [control_ipv4_addr],
             "game_addr": [game_ipv4_addr],
-            "admin_pass": str(password)
+            "admin_pass": password
         }
-        ret["forest_setup_" + name] = results
+        ret[f"forest_setup_{name}"] = results
 
+    # Step 2: Add additional domain controllers (replicas)
     followers = list(filter(lambda x: 'domain_controller' in x['roles'], enterprise['nodes']))
     for follower in followers:
-        domain = follower['domain']
         name = follower['name']
-        print("Setting up domain controller on " + name + ' for domain ' + domain)
+        domain = follower['domain']
+        print(f"Setting up domain controller on {name} for domain {domain}")
         control_ipv4_addr, game_ipv4_addr, password = extract_creds(enterprise_built, name)
         if only is None or name in only:
             results = role_domains.add_domain_controller(
@@ -287,10 +295,58 @@ def deploy_domain_controllers(cloud_config, enterprise, enterprise_built, only):
             )
         else:
             results = {"msg": "skipping setup of domain controller follower as requested."}
-
         leader_details[domain]['control_addr'].append(control_ipv4_addr)
         leader_details[domain]['game_addr'].append(game_ipv4_addr)
-        ret["additional_dc_setup_" + name] = results
+        ret[f"additional_dc_setup_{name}"] = results
+
+    # Step 3: Deploy root CAs
+    root_cas = list(filter(lambda x: 'ad-root-certificate-server' in x['roles'], enterprise['nodes']))
+    for node in root_cas:
+        name = node['name']
+        domain = node['domain']
+        print(f"Setting up root certification server {name} in domain {domain}")
+        control_ipv4_addr, game_ipv4_addr, password = extract_creds(enterprise_built, name)
+        if only is None or name in only:
+            results = role_domains.setup_root_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_details[domain], cloud_config, enterprise, enterprise_built)
+        else:
+            results = {"msg": "skipping setup of root certification server as requested."}
+        leader_details[domain].setdefault("root_certification_server", {"control_addr": [], "game_addr": []})
+        leader_details[domain]["root_certification_server"]["control_addr"].append(control_ipv4_addr)
+        leader_details[domain]["root_certification_server"]["game_addr"].append(game_ipv4_addr)
+        leader_details[domain]["root_ca_name"] = name
+        ret[f"setup_root_adcs_{name}"] = results
+
+    # Step 4: Deploy subordinate CAs
+    sub_cas = list(filter(lambda x: 'ad-subordinate-certificate-server' in x['roles'], enterprise['nodes']))
+    for node in sub_cas:
+        name = node['name']
+        domain = node['domain']
+        print(f"Setting up subordinate certification server {name} in domain {domain}")
+        control_ipv4_addr, game_ipv4_addr, password = extract_creds(enterprise_built, name)
+        if only is None or name in only or leader_details[domain]["root_ca_name"] in only:
+            results = role_domains.setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_details[domain], cloud_config, enterprise, enterprise_built)
+            sub_info = {
+                "node": node,
+                "control_ip": control_ipv4_addr,
+                "game_ip": game_ipv4_addr,
+                "password": password,
+                "domain": domain,
+                "enterprise_url": cloud_config['enterprise_url']
+            }
+            root_info = {
+                'control_addr': leader_details[domain]["root_certification_server"]["control_addr"][0],
+                'admin_pass': leader_details[domain]['admin_pass']
+            }
+
+            print(f"Linking subordinate CA {node['name']} to root CA in domain {domain}")
+            result = role_domains.link_subordinate_to_root(root_info, sub_info)
+            ret[f"link_subordinate_{node['name']}"] = result
+        else:
+            results = {"msg": "skipping setup of subordinate certification server as requested."}
+        leader_details[domain].setdefault("subordinate_certification_server", {"control_addr": [], "game_addr": []})
+        leader_details[domain]["subordinate_certification_server"]["control_addr"].append(control_ipv4_addr)
+        leader_details[domain]["subordinate_certification_server"]["game_addr"].append(game_ipv4_addr)
+        ret[f"setup_subordinate_adcs_{name}"] = results
 
     ret["domain_leaders"] = leader_details
     return ret
@@ -381,16 +437,17 @@ def main():
         json_output['enterprise_built'] = enterprise_built
         json_output["setup-end_time"] = str(datetime.now())
 
-        print("Enterprise setup.  Writing output to post-deploy-output.json.")
+        print("Enterprise setup.  Writing output to post-deploy-output.json.  Run simulate-logins.py next.")
 
     except Exception as _:   # noqa: F841
         traceback.print_exc()
         print("Exception occured while setting up enterprise.  Dumping results to post-deploy-output.json anyhow.")
+        return 1
 
     with open("post-deploy-output.json", "w") as f:
         json.dump(json_output, f)
 
-    return
+    return 0
 
 
 if __name__ == '__main__':
