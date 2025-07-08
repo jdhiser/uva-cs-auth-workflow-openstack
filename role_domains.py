@@ -857,11 +857,11 @@ def link_subordinate_to_root(root_info, sub_info):
     root_shell.put_file(local_req, remote_req)
 
     # Step 3: Submit request on root CA and save .cer
-    sign_cmd = (
-        f"certreq -submit -q -attrib \"CertificateTemplate:SubCA\" "
-        f"\"{remote_req}\" \"{remote_cer}\""
-    )
-    stdout, stderr, exit_status = root_shell.execute_powershell(sign_cmd, verbose=verbose)
+    sign_cmd = f"""
+certreq -submit -q -attrib "CertificateTemplate:SubCA "{remote_req}" "{remote_cer}"
+Restart-Service certsvc
+"""
+    stdout, stderr, exit_status = root_shell.execute_powershell_multiline(sign_cmd, verbose=verbose, filename="sign_request.ps1")
 
     # Step 4: Fetch signed .cer
     root_shell.get_file(remote_cer, local_cer)
@@ -870,21 +870,99 @@ def link_subordinate_to_root(root_info, sub_info):
     sub_shell.put_file(local_cer, "C:\\tmp\\subca.cer")
 
     # Step 6: Finalize subordinate CA install
-    install_cmd = (
-        "certutil -installcert C:\\tmp\\subca.cer;"
-        "Start-Service certsvc"
+    # Step 6: Finalize subordinate CA install without risk of hanging
+    install_cmd = """
+# Enable tracing for debugging (like bash -x)
+Set-PSDebug -Trace 1
 
-    )
-    install_out, install_err, install_status = sub_shell.execute_powershell(install_cmd, verbose=verbose)
+Import-Certificate -FilePath "C:\\tmp\\subca.cer" -CertStoreLocation Cert:\\LocalMachine\\CA
+Start-Service -Name netlogon, rpcss, eventlog
+certutil -urlfetch -verify C:\\tmp\\subca.cer
+
+
+# Wait for private key to become available
+$keyReady = $false
+for ($j = 0; $j -lt 30; $j++) {
+    $keyOutput = certutil -key | Out-String
+    if ($keyOutput -match "AT_KEYEXCHANGE") {
+        $keyReady = $true
+        break
+    }
+    Start-Sleep -Seconds 2
+}
+if (-not $keyReady) {
+    Write-Error 'CA private key not available in time'
+    exit 1
+}
+
+# Attempt certutil -installcert with retries and timeout using Start-Job
+$maxRetries = 5
+$success = $false
+for ($i = 0; $i -lt $maxRetries; $i++) {
+    Write-Host "Attempt $($i + 1) to run certutil -installcert..."
+
+    $job = Start-Job -ScriptBlock {
+        certutil -installcert -f -v C:\\tmp\\subca.cer
+    }
+
+    if (Wait-Job -Job $job -Timeout 60) {
+        $output = Receive-Job -Job $job
+        $exitCode = $LASTEXITCODE
+        Remove-Job -Job $job -Force
+
+        if ($exitCode -eq 0) {
+            Write-Host $output
+            $success = $true
+            break
+        } else {
+            Write-Warning "certutil failed with exit code $exitCode. Output:"
+            Write-Host $output
+        }
+    } else {
+        Stop-Job -Job $job | Out-Null
+        Remove-Job -Job $job -Force
+        Write-Warning "certutil -installcert attempt $($i + 1) timed out. Retrying..."
+    }
+
+    Start-Sleep -Seconds 5
+}
+
+if (-not $success) {
+    Write-Error "certutil -installcert failed after $maxRetries attempts."
+    exit 1
+}
+
+# Start the Certificate Services
+Start-Service certsvc
+
+# Disable tracing
+Set-PSDebug -Trace 0
+
+    """
+    install_out, install_err, install_status = sub_shell.execute_powershell_multiline(
+        install_cmd, filename="finalize-sub-install.ps1", verbose=verbose)
 
     # Verify Subordinate CA
     verify_cmd = "certutil -CAinfo"
     try:
-        verify_out, verify_err, verify_exit_status = sub_shell.execute_powershell(verify_cmd, verbose=verbose)
+        verify_out, verify_err, verify_exit_status = sub_shell.execute_powershell(
+            verify_cmd, verbose=verbose)
     except Exception as e:
         raise RuntimeError(f"Failed to verify AD CS: {e}")
 
+    print(f"install_stdout={install_out}")
+    print(f"install_stderr={install_err}")
+    print(f"install_exit_status={install_status}")
+    print(f"verify_stdout={verify_out}")
+    print(f"verify_stderr={verify_err}")
+    print(f"verify_exit_status={verify_exit_status}")
     if 'CertUtil: -CAInfo command completed successfully' not in str(verify_out):
+        print(f"install_stdout={install_out}")
+        print(f"install_stderr={install_err}")
+        print(f"install_exit_status={install_status}")
+        print(f"verify_stdout={verify_out}")
+        print(f"verify_stderr={verify_err}")
+        print(f"verify_exit_status={verify_exit_status}")
         raise RuntimeError("AD CS installation issue, could not verify CA certificate.")
     print("  Verified Subordinate CA was setup properly")
 
