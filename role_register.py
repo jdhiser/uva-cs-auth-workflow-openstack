@@ -6,17 +6,17 @@ verbose = False
 
 def do_rename_adapter(control_ip: str, user: str, password: str, rename_ip: str, new_name: str):
 
-    rename_cmd = (
-        '$ipAddr="{}"; '.format(rename_ip) +
-        '$new_name="{}"; '.format(new_name) +
-        '$adapter = Get-NetIPAddress -IPAddress $ipAddr| Select-Object -ExpandProperty InterfaceAlias ;  ' +
-        'Rename-NetAdapter -Name $adapter -NewName $new_name ; ' +
-        'write-output "It worked!" '
-    )
+    rename_cmd = f"""
+        $ipAddr="{rename_ip}"
+        $new_name="{new_name}"
+        $adapter = Get-NetIPAddress -IPAddress $ipAddr| Select-Object -ExpandProperty InterfaceAlias
+        Rename-NetAdapter -Name $adapter -NewName $new_name
+        write-output "It worked!"
+        """
 
     try:
         shell = ShellHandler(control_ip, user, password, verbose=verbose)
-        stdout, stderr, exit_status = shell.execute_powershell(rename_cmd)
+        stdout, stderr, exit_status = shell.execute_powershell_multiline(rename_cmd, filename=f"rename-{new_name}")
     except paramiko.ssh_exception.AuthenticationException:
         print("Could not connect with credentials to rename adapter.  Already domain-joined?")
         return {}

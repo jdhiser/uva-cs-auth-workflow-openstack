@@ -121,61 +121,46 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
     print('  domain-controller leader (game): ' + game_leader_ip)
     print('  domain-controller password: ' + leader_admin_password)
 
-    pycmd = (
-        "wget https://www.python.org/ftp/python/3.12.1/python-3.12.1-embed-amd64.zip -Outfile python.zip; "
-        "Expand-Archive -force .\python.zip; "
-        "mv python c:\\ ; "
-        "icacls \"c:\\python\" /grant:r \"users:(RX)\" /C ; "
-    )
+    adcmd = """
+        wget https://www.python.org/ftp/python/3.12.1/python-3.12.1-embed-amd64.zip -Outfile python.zip
+        Expand-Archive -force .\python.zip
+        mv python c:\\
+        icacls "c:\\python" /grant:r "users:(RX)" /C
+        reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\TimeProviders\\NtpServer /v Enabled /t REG_DWORD /d 1 /f
+        reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\Parameters /v Type /t REG_SZ /d NTP /f
+        reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\Config /v AnnounceFlags /t REG_DWORD /d 5 /f
+        tzutil /s 'Eastern Standard Time'
+        w32tm /config /manualpeerlist:'pool.ntp.org,0x1' /syncfromflags:manual /reliable:yes /update
+        net stop w32time
+        net start w32time
+        w32tm /resync /force
+        w32tm /config /manualpeerlist:"time.google.com 0.pool.ntp.org 1.pool.ntp.org" /syncfromflags:manual /reliable:yes /update
+        net stop w32time
+        net start w32time
+        w32tm /resync
+        w32tm /query /status
+        Install-windowsfeature AD-domain-services
+        Import-Module ADDSDeployment
+        Set-DnsClientServerAddress -serveraddress ('{}') -interfacealias 'game-adapter'
+        Set-DnsClientServerAddress -serveraddress ('{}') -interfacealias 'control-adapter'
+        $passwd = convertto-securestring -AsPlainText -Force -String '{}'
+        $cred = new-object -typename System.Management.Automation.PSCredential -argumentlist '{}\\administrator',$passwd
+        $secure=ConvertTo-SecureString -asplaintext -string '{}' -force
+        sleep 60
+        Install-ADDSDomainController -DomainName {} -SafeModeAdministratorPassword $secure -verbose -NoRebootOnCompletion:$true  -confirm:$false -credential $cred
+        $oldpath = (Get-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager\Environment' -Name PATH).path
+        $newpath = "$oldpath;C:\\python"
+        Set-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager\Environment' -Name PATH -Value $newpath
+    """.format(game_leader_ip, game_leader_ip, leader_admin_password, domain_name, domain_safe_mode_password, domain_name)
 
-    adcmd = (
-        "reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\TimeProviders\\NtpServer /v Enabled /t REG_DWORD /d 1 /f; "
-        "reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\Parameters /v Type /t REG_SZ /d NTP /f; "
-        "reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\Config /v AnnounceFlags /t REG_DWORD /d 5 /f; "
-        "tzutil /s 'Eastern Standard Time' ;  "
-        "w32tm /config /manualpeerlist:'pool.ntp.org,0x1' /syncfromflags:manual /reliable:yes /update; "
-        "net stop w32time; "
-        "net start w32time; "
-        "w32tm /resync /force; "
-        "w32tm /config /manualpeerlist:\"time.google.com 0.pool.ntp.org 1.pool.ntp.org\" /syncfromflags:manual /reliable:yes /update ;"
-        "net stop w32time ;"
-        "net start w32time ;"
-        "w32tm /resync ;"
-        "w32tm /query /status ;"
-        "Install-windowsfeature AD-domain-services ; "
-        "Import-Module ADDSDeployment ;  "
-        "Set-DnsClientServerAddress -serveraddress ('{}') -interfacealias 'game-adapter' ; "
-        "Set-DnsClientServerAddress -serveraddress ('{}') -interfacealias 'control-adapter' ; "
-        "$passwd = convertto-securestring -AsPlainText -Force -String '{}' ; "
-        "$cred = new-object -typename System.Management.Automation.PSCredential -argumentlist '{}\\administrator',$passwd ; "
-        "$secure=ConvertTo-SecureString -asplaintext -string '{}' -force ; "
-        "sleep 60; "
-        "Install-ADDSDomainController -DomainName {} -SafeModeAdministratorPassword $secure -verbose -NoRebootOnCompletion:$true  -confirm:$false -credential $cred; "
-        "$oldpath = (Get-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager\Environment' -Name PATH).path; "
-        "$newpath = \"$oldpath;C:\python\" ; "
-        "Set-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager\Environment' -Name PATH -Value $newpath "
-    ).format(game_leader_ip, game_leader_ip, leader_admin_password, domain_name, domain_safe_mode_password, domain_name)
-
-    if verbose:
-        print("  Register as domain comtroller command:" + adcmd)
-
-    try:
-        shell = ShellHandler(control_ipv4_addr, user, password)
-        stdout2, stderr2, exit_status2 = shell.execute_powershell(pycmd, verbose=verbose)
-    except paramiko.ssh_exception.AuthenticationException:
-        return {}
-
-    stdout = [stdout2]
-    stderr = [stderr2]
-    exit_status = [exit_status2]
+    stdout = []
+    stderr = []
+    exit_status = []
     attempts = 0
     while attempts < 10:
         shell = ShellHandler(control_ipv4_addr, user, password)
         attempts += 1
-#        if name == 'dc3':
-#            print('adcmd='+ str(adcmd))
-#            sys.exit(1)
-        stdout2, stderr2, exit_status2 = shell.execute_powershell(adcmd, verbose=verbose)
+        stdout2, stderr2, exit_status2 = shell.execute_powershell_multiline(adcmd, filename="ad-install.ps1", verbose=verbose)
 
         stdout.append(stdout2)
         stderr.append(stderr2)
@@ -287,25 +272,29 @@ def join_domain_windows(name, leader_admin_password, control_ipv4_addr, game_ipv
     print("Windows join-domain for node " + name)
 
     user = 'Administrator'
-    cmd = (
-        "$passwd = convertto-securestring -AsPlainText -Force -String {} ; "
-        "$cred = new-object -typename System.Management.Automation.PSCredential -argumentlist 'administrator@{}',$passwd ; "
-        "Set-DnsClientServerAddress -serveraddress ({}) -interfacealias 'game-adapter' ; "
-        "Add-Computer -Credential $cred -domainname {};"
-        "wget https://www.python.org/ftp/python/3.12.1/python-3.12.1-embed-amd64.zip -Outfile python.zip; "
-        "Expand-Archive -force .\python.zip; "
-        "mv python c:\\ ; "
-        "icacls \"c:\\python\" /grant:r \"users:(RX)\" /C ; "
-        "$oldpath = (Get-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager\Environment' -Name PATH).path; "
-        "$newpath = \"$oldpath;C:\python\" ; "
-        "Set-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager\Environment' -Name PATH -Value $newpath "
+    cmd = f"""
+$passwd = convertto-securestring -AsPlainText -Force -String {leader_admin_password}
+$cred = new-object -typename System.Management.Automation.PSCredential -argumentlist 'administrator@{domain_name}',$passwd
+Set-DnsClientServerAddress -serveraddress ({domain_ips}) -interfacealias 'game-adapter'
+Add-Computer -Credential $cred -domainname {fqdn_domain_name}
 
-    ).format(leader_admin_password, domain_name, domain_ips, fqdn_domain_name)
+if (Test-Path 'C:\\Python') {{
+    Remove-Item -Path 'C:\\Python' -Recurse -Force
+}}
+
+wget https://www.python.org/ftp/python/3.12.1/python-3.12.1-embed-amd64.zip -Outfile python.zip
+Expand-Archive -force .\\python.zip
+mv python c:\\
+icacls 'c:\\python' /grant:r "users:(RX)" /C
+$oldpath = (Get-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Control\\Session Manager\\Environment' -Name PATH).path
+$newpath = "$oldpath;C:\\python"
+Set-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Control\\Session Manager\\Environment' -Name PATH -Value $newpath
+"""
 
     print("  Joining an existing domain: " + domain_name)
 
     shell = ShellHandler(control_ipv4_addr, user, password)
-    stdout, stderr, exit_status = shell.execute_powershell(cmd, verbose=verbose)
+    stdout, stderr, exit_status = shell.execute_powershell_multiline(cmd, filename="join-domain", verbose=verbose)
 
     try:
         shell = ShellHandler(control_ipv4_addr, user, password)
@@ -858,7 +847,7 @@ def link_subordinate_to_root(root_info, sub_info):
 
     # Step 3: Submit request on root CA and save .cer
     sign_cmd = f"""
-certreq -submit -q -attrib "CertificateTemplate:SubCA "{remote_req}" "{remote_cer}"
+certreq -submit -q -attrib "CertificateTemplate:SubCA" "{remote_req}" "{remote_cer}"
 Restart-Service certsvc
 """
     stdout, stderr, exit_status = root_shell.execute_powershell_multiline(sign_cmd, verbose=verbose, filename="sign_request.ps1")
@@ -950,12 +939,6 @@ Set-PSDebug -Trace 0
     except Exception as e:
         raise RuntimeError(f"Failed to verify AD CS: {e}")
 
-    print(f"install_stdout={install_out}")
-    print(f"install_stderr={install_err}")
-    print(f"install_exit_status={install_status}")
-    print(f"verify_stdout={verify_out}")
-    print(f"verify_stderr={verify_err}")
-    print(f"verify_exit_status={verify_exit_status}")
     if 'CertUtil: -CAInfo command completed successfully' not in str(verify_out):
         print(f"install_stdout={install_out}")
         print(f"install_stderr={install_err}")
@@ -978,7 +961,7 @@ Set-PSDebug -Trace 0
                 "stderr": install_err,
                 "exit_status": install_status
             },
-            "verifyl_cert": {
+            "verify_cert": {
                 "stdout": verify_out,
                 "stderr": verify_err,
                 "exit_status": verify_exit_status
