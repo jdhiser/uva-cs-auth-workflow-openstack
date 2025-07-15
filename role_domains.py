@@ -3,10 +3,9 @@ import socket
 import paramiko
 import role_fs
 from shell_handler import ShellHandler
-# from password import generate_password
 
 
-domain_safe_mode_password = 'hello!321'  # generate_password(12)
+domain_safe_mode_password = 'hello!321'
 verbose = False
 
 
@@ -338,11 +337,154 @@ Set-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\
     }
 
 
-def join_domain_linux(obj, name, leader_admin_password, control_ipv4_addr, game_ipv4_addr, domain_ips, fqdn_domain_name, domain_name, password, enterprise_name):
+def install_ca_certs_from_ad(obj, leader_admin_password: str):
+    """
+    install_ca_certs_from_ad
+
+    Retrieves the Root and Subordinate CA certificates from the domain controller using LDAP,
+    saves them to the local trust store, and updates the system CA certificates.
+
+    Parameters:
+    - obj: dict - Node and domain configuration object from join_domain_linux
+    - leader_admin_password: str - the password for the domain controller in charge of the domain
+
+    Returns:
+    - dict: stdout, stderr, exit_status from the installation step
+    """
+
+    cloud_config = obj['cloud_config']
+    node = obj['node']
+    name = node['name']
+    domain_name = obj['domain']
+    enterprise_name = cloud_config['enterprise_url']
+    fqdn_domain_name = domain_name + '.' + enterprise_name
+    base_dn = ','.join([f'DC={x}' for x in fqdn_domain_name.split('.')])
+    ldap_base = f"CN=Certification Authorities,CN=Public Key Services,CN=Services,CN=Configuration,{base_dn}"
+    leader = obj['domain_leader']
+    control_ipv4_addr = obj['control_addr']
+    game_leader_addr = leader['game_addr'][0]
+
+    print(f"  Attempting to trust Root and Subordinate CAs for domain {fqdn_domain_name} on node {name}...")
+
+    cmd = f"""
+sudo bash << 'EOT' 2>&1 | sudo tee -a /var/log/install_ca_certs.log
+set -x
+whoami
+
+export DEBIAN_FRONTEND=noninteractive
+sudo apt-get update
+sudo apt-get install -y ldap-utils openssl
+
+# Create output directory for certs
+mkdir -p /usr/local/share/ca-certificates/castle
+cd /usr/local/share/ca-certificates/castle
+
+# Retrieve certs using ldapsearch
+ldap_output=$(ldapsearch -x -w {leader_admin_password}  -D 'administrator@{domain_name}.{enterprise_name}' -H ldap://{game_leader_addr} \
+  -b "{ldap_base}" \
+  -s sub \
+  "(objectClass=*)" \
+  cACertificate)
+
+if ! echo "$ldap_output" | grep -q '^cACertificate::'; then
+    echo "No CA certificates found in LDAP. Skipping installation."
+    echo "NO_CA_FOUND_MARKER"
+    exit 0
+fi
+
+# Properly extract multi-line base64-encoded certificates
+echo "$ldap_output" | awk '
+    /^cACertificate:: / {{
+        collecting = 1;
+        print substr($0, index($0, "::") + 3);
+        next;
+    }}
+    collecting && /^[ \t]/ {{
+        gsub(/^[ \t]+/, "");
+        print;
+        next;
+    }}
+    collecting {{
+        collecting = 0;
+    }}
+' | base64 -d > combined_cas.der
+
+if [[ ! -s combined_cas.der ]]; then
+    echo "Error: No certificates retrieved from LDAP." >&2
+    exit 1
+fi
+
+# Split certs (if needed) and convert to PEM
+csplit -f part_ -b "%02d.der" combined_cas.der '/-----BEGIN/' '{{*}}' || true
+
+cert_count=0
+for f in part_*.der; do
+    if openssl x509 -inform DER -in "$f" -out "${{f%.der}}.crt"; then
+        rm "$f"
+        ((cert_count++))
+    fi
+done
+
+if (( cert_count == 0 )); then
+    echo "Error: No valid certificates converted from DER." >&2
+    exit 1
+fi
+
+# Copy .crt files to CA store
+cp *.crt /usr/local/share/ca-certificates/
+
+# Update CA certificates and log result
+update-ca-certificates | tee /tmp/update-ca-certs.out
+EOT
+"""
+
+    shell = ShellHandler(control_ipv4_addr, 'ubuntu', None)
+    stdout, stderr, exit_status = shell.execute_cmd(cmd, verbose=False)
+
+    # Check if no CA was found and installation skipped
+    if any("NO_CA_FOUND_MARKER" in line for line in stdout):
+        print("  No CA published in domain. Skipping certificate installation.")
+    else:
+        install_success = any(
+            "Adding debian:" in line or "Adding certificate" in line or "Updating certificates" in line
+            for line in stdout
+        )
+
+        if not install_success:
+            print("install_ca_certs_from_ad failed to detect success")
+            print("STDOUT:\n" + ''.join(stdout))
+            print("STDERR:\n" + ''.join(stderr))
+            print("EXIT STATUS:\n" + str(exit_status))
+            raise RuntimeError("Failed to verify that CA certificates were installed from domain controller")
+
+        print(f"  Successfully trusted CA certificates for domain {fqdn_domain_name} on node {name}.")
+
+    return {
+        "install_ca_certs": {
+            "stdout": stdout,
+            "stderr": stderr,
+            "exit_status": exit_status
+        }
+    }
+
+
+def join_domain_linux(obj,
+                      name,
+                      leader_admin_password,
+                      control_ipv4_addr,
+                      game_ipv4_addr,
+                      domain_ips,
+                      fqdn_domain_name,
+                      domain_name,
+                      password,
+                      enterprise_name
+                      ):
     netplan_config_path = '/etc/netplan/50-cloud-init.yaml'
     chrony_config_path = '/etc/chrony/chrony.conf'
     domain_ips_formated = str(domain_ips).replace('[', '').replace(']', '').replace('"', '')
     krdb_config_path = '/etc/krb5.conf'
+
+    ca_trust = install_ca_certs_from_ad(obj, leader_admin_password)
 
     cmd = f"""
 bash << 'EOT' 2>&1 | sudo tee -a /var/log/join_domain.log
@@ -541,7 +683,8 @@ EOT
     return {
         "mount_home_dirs": role_fs.mount_home_directories_linux(obj),
         "join_domain": {"join-cmd": cmd, "stdout": stdout, "stderr": stderr, "exit_status": exit_status},
-        "verify_join_domain": {"stdout": stdout2, "stderr": stderr2, "exit_status": exit_status2}
+        "verify_join_domain": {"stdout": stdout2, "stderr": stderr2, "exit_status": exit_status2},
+        "ca_trust_output": ca_trust
     }
 
 
@@ -630,7 +773,7 @@ def setup_root_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_deta
     print(f"  Installing Root AD CS for node {name}")
 
     # Construct the PowerShell command as a multiline string
-    adcs_cmd = """
+    adcs_cmd = f"""
         Install-WindowsFeature AD-Domain-Services
         Get-ADDomain
         Install-WindowsFeature ADCS-Cert-Authority
@@ -640,6 +783,7 @@ def setup_root_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_deta
             -KeyLength 2048 `
             -HashAlgorithmName SHA256 `
             -ValidityPeriod Years -ValidityPeriodUnits 5 `
+            -CACommonName "{domain_name}-RootCA" `
             -Force
         Write-Host 'AD CS RootCA installation completed.'
         """
@@ -727,9 +871,6 @@ def setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, lead
     - dict: stdout, stderr, and exit_status from the shell command
     """
 
-    import paramiko
-    from shell_handler import ShellHandler
-
     name = node['name']
     domain_name = node['domain']
     enterprise_name = cloud_config['enterprise_url']
@@ -754,12 +895,12 @@ def setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, lead
     )
     print(f"  Installing Subordinate AD CS for node {name}")
 
-    cmd = """
+    cmd = f"""
         Install-WindowsFeature AD-Domain-Services
         Get-ADDomain
         Install-WindowsFeature ADCS-Cert-Authority
         Import-Module ADCSDeployment
-        Install-AdcsCertificationAuthority -CAType EnterpriseSubordinateCA -Force
+        Install-AdcsCertificationAuthority -CAType EnterpriseSubordinateCA -Force -CACommonName "{domain_name}-SubCA"
         Write-Host 'AD CS SubordinateCA request created.'
     """
 
@@ -810,7 +951,6 @@ def link_subordinate_to_root(root_info, sub_info):
     """
 
     import os
-    from shell_handler import ShellHandler
 
     sub_node = sub_info['node']
     sub_name = sub_node['name']
@@ -818,7 +958,7 @@ def link_subordinate_to_root(root_info, sub_info):
     domain = sub_info['domain']
     enterprise_url = sub_info['enterprise_url']
 
-    sub_req_file = f"C:\\{sub_name}.{domain}.{enterprise_url}_{domain}-{sub_name.upper()}-CA.req"
+    sub_req_file = f"C:\\{sub_name}.{domain}.{enterprise_url}_{domain}-SubCA.req"
 
     root_ip = root_info['control_addr']
     root_password = root_info['admin_pass']
@@ -923,6 +1063,39 @@ if (-not $success) {
 
 # Start the Certificate Services
 Start-Service certsvc
+
+
+# wait for services to be ready
+$maxWaitSeconds = 300
+$intervalSeconds = 5
+$elapsed = 0
+$success = $false
+
+while ($elapsed -lt $maxWaitSeconds)
+{
+    try
+    {
+        $output = certutil -CAInfo | Out-String
+        if ($output -match 'CertUtil: -CAInfo command completed successfully')
+        {
+            Write-Host "CertUtil verified: CAInfo command succeeded."
+            $success = $true
+            break
+        }
+    }
+    catch
+    {
+        # Ignoring exception, will retry
+    }
+
+    Start-Sleep -Seconds $intervalSeconds
+    $elapsed += $intervalSeconds
+}
+
+if (-not $success)
+{
+    Write-Warning "Timed out waiting for certutil -CAInfo to succeed."
+}
 
 # Disable tracing
 Set-PSDebug -Trace 0

@@ -1,14 +1,16 @@
+import time
 import paramiko
 import sys
 import socket
 import os
 import datetime
 from typing import Tuple
+from paramiko.ssh_exception import SSHException
 
 
 class ShellHandler:
 
-    def __init__(self, host, user, password, from_ip: str = None, verbose=False, timeout=30):
+    def __init__(self, host, user, password, from_ip: str = None, verbose=False, timeout=30, retries: int = 10, base_delay: float = 5.0,):
 
         self.verbose = verbose
         self.sock = None
@@ -19,7 +21,26 @@ class ShellHandler:
 
         self.ssh = paramiko.SSHClient()
         self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        self.ssh.connect(host, username=user, password=password, port=22, sock=self.sock, timeout=timeout)
+        # self.ssh.connect(host, username=user, password=password, port=22, sock=self.sock, timeout=timeout)
+        for attempt in range(retries):
+            try:
+                self.ssh.connect(
+                    host,
+                    username=user,
+                    password=password,
+                    port=22,
+                    sock=self.sock,
+                    timeout=timeout,
+                )
+                break
+            except SSHException as e:
+                if attempt < retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    print(f"[WARN] SSH connection failed (attempt {attempt + 1}/{retries}): {e}. Retrying in {delay:.1f}s...")
+                    time.sleep(delay)
+                else:
+                    print(f"[ERROR] SSH connection failed after {retries} attempts: {e}")
+                    raise
         self.sftp = self.ssh.open_sftp()
 
     def __del__(self):
@@ -51,11 +72,10 @@ class ShellHandler:
                     for line in stderr_newlines:
                         print(line)
 
-
         exit_status = stdout.channel.recv_exit_status()
-        stdout_newlines = stdout.readlines()  
+        stdout_newlines = stdout.readlines()
         stdout_lines += stdout_newlines
-        stderr_newlines = stderr.readlines()  
+        stderr_newlines = stderr.readlines()
         stderr_lines += stderr_newlines
         if verbose or self.verbose:
             for line in stdout_newlines:
@@ -93,6 +113,19 @@ class ShellHandler:
             remote_file.write(content)
         return
 
+    def get_file_to_string(self, src_filename: str) -> str:
+        """
+        Read the contents of a remote file into a string.
+
+        Parameters:
+        - src_filename: str - Path to the file on the remote system
+
+        Returns:
+        - str: File content as a string
+        """
+        with self.sftp.file(src_filename, mode='r') as remote_file:
+            return remote_file.read().decode('utf-8')
+
     def execute_powershell_multiline(self, script_contents: str, filename: str, verbose=False) -> Tuple[list[str], list[str], int]:
         """
         Executes a multi-line PowerShell script on a remote Windows machine with tracing and logging.
@@ -116,19 +149,28 @@ class ShellHandler:
         # Write actual user script
         self.put_file_from_string(script_path, script_contents)
 
-        # Write wrapper script that enables tracing and logging
+        # Write wrapper script that enables tracing and logging in the child script
         wrapper_contents = f"""
-    $OutputEncoding = [System.Text.Encoding]::UTF8
-    Start-Transcript -Path "{log_path}" -Force
-    Set-PSDebug -Trace 1
-    try {{
-        & "{script_path}"
-        exit $LASTEXITCODE
-    }} finally {{
-        Set-PSDebug -Trace 0
-        Stop-Transcript
-    }}
-    """
+$OutputEncoding = [System.Text.Encoding]::UTF8
+Start-Transcript -Path "{log_path}" -Force
+
+try {{
+    Write-Host "=== Starting install-iis.ps1 ==="
+    $command = @'
+Set-PSDebug -Trace 1
+. "{script_path}"
+Set-PSDebug -Trace 0
+'@
+    $output = powershell -ExecutionPolicy Bypass -NoProfile -Command $command *>&1
+    $exitCode = $LASTEXITCODE
+    $output | ForEach-Object {{ Write-Host $_ }}
+    Write-Host "=== Finished install-iis.ps1 ==="
+    exit $exitCode
+}} finally {{
+    Stop-Transcript
+}}
+"""
+
         self.put_file_from_string(wrapper_path, wrapper_contents)
 
         # Run wrapper with powershell -File

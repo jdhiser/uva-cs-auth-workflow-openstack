@@ -7,6 +7,7 @@ import json
 import role_register
 import role_domains
 import role_human
+import role_iis
 import role_moodle
 import role_fs
 import argparse
@@ -256,6 +257,7 @@ def deploy_domain_controllers(cloud_config, enterprise, enterprise_built, only):
     """
     Sets up Active Directory forests, domain controllers, and certificate servers (root and subordinate).
     Also links subordinate certificate authorities to their respective root CAs.
+    Also sets up an IIS server.
     """
 
     os.makedirs("tmp", exist_ok=True)
@@ -344,9 +346,24 @@ def deploy_domain_controllers(cloud_config, enterprise, enterprise_built, only):
         else:
             results = {"msg": "skipping setup of subordinate certification server as requested."}
         leader_details[domain].setdefault("subordinate_certification_server", {"control_addr": [], "game_addr": []})
+        leader_details[domain]["subordinate_certification_server"]["node"] = node
         leader_details[domain]["subordinate_certification_server"]["control_addr"].append(control_ipv4_addr)
         leader_details[domain]["subordinate_certification_server"]["game_addr"].append(game_ipv4_addr)
         ret[f"setup_subordinate_adcs_{name}"] = results
+
+    # Step 5: Deploy IIS servers
+    iis_servers = list(filter(lambda x: 'iis' in x['roles'], enterprise['nodes']))
+    for node in iis_servers:
+        name = node['name']
+        domain = node['domain']
+        print(f"Setting up IIS servcer on {name} in domain {domain}")
+        control_ipv4_addr, game_ipv4_addr, password = extract_creds(enterprise_built, name)
+        subca_node = leader_details[domain]["subordinate_certification_server"]["node"]
+        if only is None or name in only:
+            results = role_iis.setup_iis(node, control_ipv4_addr, game_ipv4_addr, password, subca_node, leader_details[domain], cloud_config, enterprise, enterprise_built)
+        else:
+            results = {"msg": "skipping setup of IIS server as requested."}
+        ret[f"setup_iis_{name}"] = results
 
     ret["domain_leaders"] = leader_details
     return ret

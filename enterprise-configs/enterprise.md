@@ -34,6 +34,7 @@ or prompt the user for things like passwords (less preferred), etc.
 ** `domain_controller` -- join an existing domain (requires a `domain_controller_leader`).
 ** `ad-root-certificate-server` -- install an active directory certification server as a root of trust.
 ** `ad-subordinate-certificate-server` -- install an active directory certification server as a subordinate to a root of trust.
+** `iis` -- setup a basic IIS web server hooked to the subordinate cert. server for the domain.
 ** `linux` -- specifies login should be via ssh key for Ubuntu 22/Jammy.
 ** `centos7` -- specifies login should be via ssh key for CentOS 7.
 ** `endpoint` -- specifies that this is an endpoint that should have human emulation.
