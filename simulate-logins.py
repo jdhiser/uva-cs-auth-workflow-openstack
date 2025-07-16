@@ -109,7 +109,7 @@ def simulate_login(term_no, login_start_time, login_length_seconds, user, enterp
                                          recursive_length_seconds, user, enterprise, to_node)
         action = {}
         action['type'] = 'recursive_login'
-        action['recure'] = recursive_login
+        action['recurse'] = recursive_login
         actions.append(action)
 
     login['from'] = from_node
@@ -220,7 +220,7 @@ def create_users(user_roles, enterprise):
         if len(role) == 0:
             errstr = ("Found no role specification for node " + user_node['name'])
             raise RuntimeError(errstr)
-        if len(role) >= 10:
+        if len(role) > 1:
             errstr = ("Found multiple role specification for node " + user_node['name'])
             raise RuntimeError(errstr)
         role = role[0]

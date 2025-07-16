@@ -3,7 +3,7 @@ from shell_handler import ShellHandler
 verbose = False
 
 # human_plugin_version = "Downloads/pyhuman-moodle.zip"
-human_plugin_version = "Downloads/pyhuman-moodle.zip"
+human_plugin_version = "Downloads/workflows.zip"
 
 
 def node_to_default_user(node):

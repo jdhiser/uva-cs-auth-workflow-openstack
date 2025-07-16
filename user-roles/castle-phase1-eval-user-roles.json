@@ -13,7 +13,8 @@
 			"activity_max_logins_per_hour":  "30",
 			"activity_daily_min_hours":  [ "23", "23", "23", "23", "23", "23", "23" ],
 			"activity_daily_max_hours":  [ "23", "23", "23", "23", "23", "23", "23" ],
-			"terminals_open":  "2"
+			"terminals_open":  "2",
+			"workflows": [ "browse_shibboleth", "moodle" ]
 		},
 		{
 			"name": "power user",
@@ -27,7 +28,8 @@
 			"activity_max_logins_per_hour":  "5",
 			"activity_daily_min_hours":  [ "0", "0", "0", "0", "0", "0", "0" ],
 			"activity_daily_max_hours":  [ "23", "23", "23", "23", "23", "23", "23" ],
-			"terminals_open":  "5"
+			"terminals_open":  "5",
+			"workflows": [ "browse_shibboleth", "moodle" ]
 		},
 		{
 			"name": "admin user",
@@ -41,7 +43,8 @@
 			"activity_max_logins_per_hour":  "8",
 			"activity_daily_min_hours":  [ "0", "0", "0", "0", "0", "0", "0" ],
 			"activity_daily_max_hours":  [ "23", "23", "23", "23", "23", "23", "23" ],
-			"terminals_open":  "5"
+			"terminals_open":  "5",
+			"workflows": [ "browse_shibboleth", "moodle" ]
 		}
 	]
 }
