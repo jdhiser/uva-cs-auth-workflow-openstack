@@ -156,8 +156,9 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
     stderr = []
     exit_status = []
     attempts = 0
-    while attempts < 10:
-        shell = ShellHandler(control_ipv4_addr, user, password)
+    try:
+        print(f"  Trying  to install AD and join domain on {name}")
+        shell = ShellHandler(control_ipv4_addr, user, password, retries=2)
         attempts += 1
         stdout2, stderr2, exit_status2 = shell.execute_powershell_multiline(adcmd, filename="ad-install.ps1", verbose=verbose)
 
@@ -165,33 +166,24 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
         stderr.append(stderr2)
         exit_status.append(exit_status2)
 
-        # stop if successful
-        if 'A domain controller could not be contacted' not in str(stderr2) and 'A domain controller could not be contacted' not in str(stdout2):
-            break
-        print("  Domain controler registration failed, rebooting and retrying.")
-        # print(str(stdout2 + stderr2))
+        print(f"  Trying to finalize domain join of {name}")
+        shell = ShellHandler(control_ipv4_addr, user, password, retries=1)
         shell.execute_powershell('Restart-computer -force', verbose=verbose)
-        time.sleep(60)
-
-    if attempts > 9:
-        raise RuntimeError("Could not join domain on machine " + name)
-
-    try:
-        shell = ShellHandler(control_ipv4_addr, user, password)
-        shell.execute_powershell('Restart-computer -force', verbose=verbose)
-    # we expect a forced reboot  to end in a socket error because the socket will
-    # forceably disconnect as the machine reboots.
-    except socket.error:
+    except Exception:
+        # it's OK to ignore exceptions here, because we next check that we can connect
+        # as the domain admin.  only if that fails do we really fail.
+        # in fact, we somewhat expect a socket error when we reboot.
         pass
 
-    print("  Waiting for reboot of windows node with ip={}.".format(control_ipv4_addr))
+    print(f"  Waiting for domain join confirmation from {name}")
     time.sleep(10)
     status_received = False
     attempts = 0
     while not status_received and attempts < 60:
         try:
             attempts += 1
-            shell = ShellHandler(control_ipv4_addr, user, leader_admin_password)
+            print("  Trying  to install AD and join domain")
+            shell = ShellHandler(control_ipv4_addr, user, leader_admin_password, retries=1)
             stdout2, stderr2, exit_status2 = shell.execute_powershell("get-addomain", verbose=verbose)
             if 'ReplicaDirectoryServers' not in str(stdout2):
                 print("Connected, waiting for AD to start up.")
@@ -222,7 +214,7 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
         errstr = 'Cannot get domain information from ' + name
         raise RuntimeError(errstr)
 
-    print("  Reboot Complete")
+    print(f"  Reboot of {name} complete, domain join verified!")
 
     return {
         "add_domain_results": {"name": name, "control_addr": control_ipv4_addr, "game_addr": game_ipv4_addr, "password": password, "domain": domain},
@@ -259,7 +251,7 @@ def join_domain(obj):
         print("  Windows join-domain for node " + name)
         return join_domain_windows(name, leader_admin_password, control_ipv4_addr, game_ipv4_addr, domain_ips, fqdn_domain_name, domain_name, password)
     elif islinux:
-        print("Linux join-domain for node " + name)
+        print("  Linux join-domain for node " + name)
         return join_domain_linux(obj, name, leader_admin_password, control_ipv4_addr, game_ipv4_addr, domain_ips, fqdn_domain_name, domain_name, password, enterprise_name)
     else:
         errstr = "  No endpoint/domain enrollment for node " + name
@@ -268,7 +260,7 @@ def join_domain(obj):
 
 def join_domain_windows(name, leader_admin_password, control_ipv4_addr, game_ipv4_addr, domain_ips, fqdn_domain_name, domain_name, password):
 
-    print("Windows join-domain for node " + name)
+    print("  Windows join-domain for node " + name)
 
     user = 'Administrator'
     cmd = f"""
@@ -290,7 +282,7 @@ $newpath = "$oldpath;C:\\python"
 Set-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Control\\Session Manager\\Environment' -Name PATH -Value $newpath
 """
 
-    print("  Joining an existing domain: " + domain_name)
+    print(f"  {name} is joining an existing domain: {domain_name}")
 
     shell = ShellHandler(control_ipv4_addr, user, password)
     stdout, stderr, exit_status = shell.execute_powershell_multiline(cmd, filename="join-domain", verbose=verbose)
@@ -301,7 +293,7 @@ Set-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\
     except socket.error:
         pass
 
-    print("  Waiting for reboot of windows domain member with ip={}.".format(control_ipv4_addr))
+    print(f"  Waiting for reboot of windows domain member {name} with ip={control_ipv4_addr}.")
     time.sleep(10)
     status_received = False
     attempts = 0
@@ -438,7 +430,7 @@ update-ca-certificates | tee /tmp/update-ca-certs.out
 EOT
 """
 
-    shell = ShellHandler(control_ipv4_addr, 'ubuntu', None)
+    shell = ShellHandler(control_ipv4_addr, 'ubuntu', None, retries=2)
     stdout, stderr, exit_status = shell.execute_cmd(cmd, verbose=False)
 
     # Check if no CA was found and installation skipped
@@ -718,7 +710,7 @@ def deploy_users(users, built):
         print("Installing users for domain " + domain + " on server " + controller_addr)
         print("  controller name,addr:" + controller_name + "(" + controller_addr + ")")
         qualified_username = 'administrator@' + domain
-        shell = ShellHandler(controller_addr, qualified_username, domain_password)
+        shell = ShellHandler(controller_addr, qualified_username, domain_password, retries=1)
         stdout, stderr, exit_status = shell.execute_powershell(cmd, verbose=verbose)
         deploy_users['add_users'][domain] = {"cmd": cmd, "stdout": stdout, "stderr": stderr, "exit_status": exit_status}
 
@@ -789,7 +781,7 @@ def setup_root_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_deta
         """
 
     # Create a shell session to the target machine
-    shell = ShellHandler(control_ipv4_addr, domain_name + '\\' + 'administrator', leader_admin_password)
+    shell = ShellHandler(control_ipv4_addr, domain_name + '\\' + 'administrator', leader_admin_password, retries=1)
 
     # Execute the multi-line PowerShell command
     try:

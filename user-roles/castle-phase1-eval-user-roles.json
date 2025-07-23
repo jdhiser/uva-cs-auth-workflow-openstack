@@ -14,6 +14,8 @@
 			"activity_daily_min_hours":  [ "23", "23", "23", "23", "23", "23", "23" ],
 			"activity_daily_max_hours":  [ "23", "23", "23", "23", "23", "23", "23" ],
 			"terminals_open":  "2",
+			"min_login_length":  "1",
+			"max_login_length":  "120",
 			"workflows": [ "browse_shibboleth", "moodle" ]
 		},
 		{
@@ -29,6 +31,8 @@
 			"activity_daily_min_hours":  [ "0", "0", "0", "0", "0", "0", "0" ],
 			"activity_daily_max_hours":  [ "23", "23", "23", "23", "23", "23", "23" ],
 			"terminals_open":  "5",
+			"min_login_length":  "1",
+			"max_login_length":  "120",
 			"workflows": [ "browse_shibboleth", "moodle" ]
 		},
 		{
@@ -44,6 +48,8 @@
 			"activity_daily_min_hours":  [ "0", "0", "0", "0", "0", "0", "0" ],
 			"activity_daily_max_hours":  [ "23", "23", "23", "23", "23", "23", "23" ],
 			"terminals_open":  "5",
+			"min_login_length":  "1",
+			"max_login_length":  "120",
 			"workflows": [ "browse_shibboleth", "moodle" ]
 		}
 	]

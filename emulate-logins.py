@@ -22,9 +22,6 @@ for name in ["paramiko", "paramiko.transport", "paramiko.auth_handler"]:
     plogger.handlers.clear()
     plogger.propagate = False
 
-# faker stuff
-
-# scheduler stuff.
 
 # configure logging
 logging.basicConfig(
@@ -150,7 +147,7 @@ def run_windows_login(shell, username, password):
     return shell.execute_powershell(cmd)
 
 
-def run_linux_login(shell, username, password, duration, seed):
+def run_linux_login_old(shell, username, password, duration, seed):
     """Simulate a Linux login using the pyhuman automation script."""
     passfile = f"/tmp/shib_login.{username}"
     cmd = (
@@ -162,7 +159,123 @@ def run_linux_login(shell, username, password, duration, seed):
     return shell.execute_cmd(cmd, verbose=True)
 
 
+def run_linux_login(shell, username, password, duration, seed, workflows: Optional[List[str]] = None):
+    """
+    Simulate a Linux login using the pyhuman automation script.
+
+    Parameters:
+        shell: ShellHandler instance
+        username (str): Username for login
+        password (str): Corresponding password
+        duration (int): How long to run the login session
+        seed (int): Random seed for reproducibility
+        workflows (List[str], optional): List of workflows to pass to human.py
+
+    Returns:
+        Tuple[List[str], List[str], int]: stdout, stderr, and exit status
+    """
+    passfile = f"/tmp/shib_login.{username}"
+    base_cmd = (
+        f'echo "{username}\n{password}" > {passfile}; '
+        f'stdbuf -i0 -oL -eL xvfb-run -a "/opt/pyhuman/bin/python" -u "/opt/pyhuman/human.py" '
+        f'--clustersize 5 --taskinterval 10 --taskgroupinterval 500 --stopafter {duration} '
+        f'--seed {seed}'
+    )
+
+    if workflows:
+        workflow_args = "--workflows " + " ".join(workflows)
+        base_cmd += f' {workflow_args}'
+
+    base_cmd += f' --extra passfile {passfile}'
+
+    return shell.execute_cmd(base_cmd, verbose=True)
+
+
 def emulate_login(number, login, user_data, built, seed, logfile):
+    """
+    Simulate a login attempt from one node to another using SSH or PowerShell.
+
+    The function handles IP spoofing (optional), user resolution, OS-specific login behavior,
+    logging, and result recording.
+    """
+    login_from = login['from']
+    if 'ip' not in login_from:
+        raise RuntimeError("Cannot get from IP for initial connection")
+    login_to = login['to']
+    if 'node' not in login_to:
+        raise RuntimeError("Cannot get destination node for initial connection")
+
+    from_ip_str = login_from['ip']
+    mac = fake.mac_address()
+    dev = 'v' + mac.replace(':', '')
+    to_node = get_target_node(built, login_to['node'])
+    domain = to_node['domain']
+    targ_ip = to_node['addresses'][0]['addr']
+    is_windows = 'windows' in to_node['enterprise_description']['roles']
+
+    user = get_user_credentials(user_data, login['user'])
+    username = user['user_profile']['username']
+    fq_username = f"{username}@{domain}"
+    password = user['user_profile']['password']
+    workflows = user['login_profile']['workflows']
+
+    msg = f"#{number} from ip {from_ip_str} with mac {mac} to ip = {targ_ip}, user = {fq_username}, password = {password}"
+    log_ssh("start", msg, targ_ip, [])
+    log_ssh("start", msg, targ_ip, [], "connect")
+    logger.info(msg)
+
+    shell = None
+    del_command = None
+
+    stdout1 = []
+    stdout2 = []
+    stderr1 = []
+    stderr2 = []
+    try:
+        if use_fake_fromip:
+            del_command = apply_fake_fromip(dev, mac, from_ip_str)
+        else:
+            from_ip_str = None
+
+        shell = ShellHandler(targ_ip, fq_username, password=password, from_ip=from_ip_str, verbose=verbose)
+
+        cmd1 = 'echo ' + json.dumps(login) + " > action.json"
+        stdout1, stderr1, status1 = shell.execute_cmd(cmd1)
+
+        if is_windows:
+            stdout2, stderr2, status2 = run_windows_login(shell, username, password)
+        else:
+            stdout2, stderr2, status2 = run_linux_login(shell, username, password, login['login_length'], seed, workflows)
+
+        logger.info("ssh successful for windows" if is_windows else "ssh successful for linux")
+
+    except KeyboardInterrupt:
+        logger.warning(f"Aborting due to KeyboardInterrupt: {msg}")
+        raise
+    except Exception:
+        log_ssh("error", msg, targ_ip, stdout1 + stderr1 + stdout2 + stderr2, "connect")
+        log_ssh("error", msg, targ_ip, stdout1 + stderr1 + stdout2 + stderr2)
+        logger.exception(f"FAILED CONNECTION {'windows' if is_windows else 'linux'}: {msg}")
+    finally:
+        if del_command:
+            os.system(del_command)
+
+    new_output = {
+        "cmd": cmd1,
+        "stdout": stdout1 + stdout2,
+        "stderr": stderr1 + stderr2,
+        "login": login,
+        "exit_status": [status1, status2]
+    }
+
+    log_ssh("success", msg, targ_ip, stdout1 + stderr1 + stdout2 + stderr2, "connect")
+    log_ssh("success", msg, targ_ip, stdout1 + stderr1 + stdout2 + stderr2)
+    login_results.append(new_output)
+
+    shell = None
+
+
+def emulate_login_old(number, login, user_data, built, seed, logfile):
     """
     Simulate a login attempt from one node to another using SSH or PowerShell.
 

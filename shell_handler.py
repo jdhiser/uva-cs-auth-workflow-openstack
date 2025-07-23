@@ -4,13 +4,23 @@ import sys
 import socket
 import os
 import datetime
-from typing import Tuple
+from typing import Tuple, Optional
 from paramiko.ssh_exception import SSHException
 
 
 class ShellHandler:
 
-    def __init__(self, host, user, password, from_ip: str = None, verbose=False, timeout=30, retries: int = 10, base_delay: float = 5.0,):
+    def __init__(
+            self,
+            host,
+            user,
+            password,
+            from_ip: Optional[str] = None,
+            verbose: bool = False,
+            timeout: int = 30,
+            retries: int = 10,
+            base_delay: float = 5.0
+    ):
 
         self.verbose = verbose
         self.sock = None
@@ -21,13 +31,20 @@ class ShellHandler:
 
         self.ssh = paramiko.SSHClient()
         self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        # self.ssh.connect(host, username=user, password=password, port=22, sock=self.sock, timeout=timeout)
+        allow_agent = True
+        look_for_keys = True
+        if password is not None:
+            allow_agent = False
+            look_for_keys = False
+
         for attempt in range(retries):
             try:
                 self.ssh.connect(
                     host,
                     username=user,
                     password=password,
+                    allow_agent=allow_agent,
+                    look_for_keys=look_for_keys,
                     port=22,
                     sock=self.sock,
                     timeout=timeout,
@@ -36,10 +53,12 @@ class ShellHandler:
             except SSHException as e:
                 if attempt < retries - 1:
                     delay = base_delay * (2 ** attempt)
-                    print(f"[WARN] SSH connection failed (attempt {attempt + 1}/{retries}): {e}. Retrying in {delay:.1f}s...")
+                    if delay > 30:
+                        delay = 30
+                    print(f"  [WARN] SSH connection to {host} failed (attempt {attempt + 1}/{retries}): {e}. Retrying in {delay:.1f}s...")
                     time.sleep(delay)
                 else:
-                    print(f"[ERROR] SSH connection failed after {retries} attempts: {e}")
+                    print(f"  [ERROR] SSH connection to {host} failed after {retries} attempts: {e}")
                     raise
         self.sftp = self.ssh.open_sftp()
 
@@ -126,7 +145,7 @@ class ShellHandler:
         with self.sftp.file(src_filename, mode='r') as remote_file:
             return remote_file.read().decode('utf-8')
 
-    def execute_powershell_multiline(self, script_contents: str, filename: str, verbose=False) -> Tuple[list[str], list[str], int]:
+    def execute_powershell_multiline(self, script_contents: str, filename: str, verbose: bool = False) -> Tuple[list[str], list[str], int]:
         """
         Executes a multi-line PowerShell script on a remote Windows machine with tracing and logging.
 
@@ -176,3 +195,39 @@ Set-PSDebug -Trace 0
         # Run wrapper with powershell -File
         cmd = f'powershell -ExecutionPolicy Bypass -File "{wrapper_path}"'
         return self.execute_cmd(cmd, verbose=verbose)
+
+    def execute_bash_multiline(self, script_contents: str, filename: str, verbose: bool = False) -> Tuple[list[str], list[str], int]:
+        """
+        Executes a multi-line Bash script on a remote Linux machine and logs output to /var/log.
+
+        Parameters:
+        - script_contents: str - The Bash script to run.
+        - filename: str - A base name for the script, used to generate a unique log file name. Must not include directory or extension.
+        - verbose: bool -- whether to do verbose output for the user.
+
+        Returns:
+        - Tuple of (stdout_lines, stderr_lines, exit_status)
+        """
+        if os.path.dirname(filename):
+            raise ValueError("filename must not contain directory components")
+        if os.path.splitext(filename)[1]:
+            raise ValueError("filename must not have a file extension")
+
+        basename = filename
+        script_dir = "/opt/shellhandler/scripts"
+        script_path = f"{script_dir}/{basename}.sh"
+        log_path = f"/var/log/{basename}.log"
+
+        # Ensure the target directory exists
+        self.execute_cmd(f"mkdir -p '{script_dir}'", verbose=verbose)
+
+        # Upload the script
+        self.put_file_from_string(script_path, script_contents)
+
+        # Make the script executable
+        chmod_cmd = f"chmod +x '{script_path}'"
+        self.execute_cmd(chmod_cmd, verbose=verbose)
+
+        # Run the script with output redirected
+        exec_cmd = f"bash '{script_path}' > '{log_path}' 2>&1"
+        return self.execute_cmd(exec_cmd, verbose=verbose)

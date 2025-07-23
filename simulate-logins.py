@@ -61,7 +61,7 @@ def probabilistic_round(x):
     return int(math.floor(x + random.random()))
 
 
-def simulate_login(term_no, login_start_time, login_length_seconds, user, enterprise, from_node=None):
+def simulate_login(term_no, login_start_time, login_length_seconds, user, enterprise, workflows, from_node=None):
     if from_node is None:
         from_node = {
             "ip": fake.ipv4(),
@@ -78,7 +78,8 @@ def simulate_login(term_no, login_start_time, login_length_seconds, user, enterp
         "user": user['user_profile']['username'],
         "login_start": login_start_time,
         "login_end": login_end_time,
-        "login_length": login_length_seconds
+        "login_length": login_length_seconds,
+        "workflows": workflows
     }
 
     nonpersonal_logins = float(login_profile['fraction_of_non_personal_logins_to_shared_machines'])
@@ -106,7 +107,7 @@ def simulate_login(term_no, login_start_time, login_length_seconds, user, enterp
         remaining_duration = (login_end_time - recursive_start_time).total_seconds()
         recursive_length_seconds = random.randint(1, remaining_duration)
         recursive_login = simulate_login(None, recursive_start_time,
-                                         recursive_length_seconds, user, enterprise, to_node)
+                                         recursive_length_seconds, user, enterprise, workflows, to_node)
         action = {}
         action['type'] = 'recursive_login'
         action['recurse'] = recursive_login
@@ -128,16 +129,17 @@ def simulate_hour(term_no, day_to_work, hour_to_work, user, enterprise):
     logins = []
 
     login_profile = user['login_profile']
+    workflows = login_profile['workflows']
+    min_login_length = int(login_profile['min_login_length'])
+    max_login_length = int(login_profile['max_login_length'])
     logins_per_hour_min = login_profile['activity_min_logins_per_hour']
     logins_per_hour_max = login_profile['activity_max_logins_per_hour']
     logins_this_hour = probabilistic_round(random.randint(int(logins_per_hour_min), int(logins_per_hour_max)) / 2.0)
 
     for login_no in range(logins_this_hour):
         start_second = day_to_work + timedelta(hours=hour_to_work) + timedelta(seconds=random.randint(0, 3600))
-#        login_length_second = random.randint(1, 120 * 60)
-# Use shorter settings for eval
-        login_length_second = random.randint(1, 120)
-        login_sequence = simulate_login(term_no, start_second, login_length_second, user, enterprise)
+        login_length_second = random.randint(min_login_length, max_login_length)
+        login_sequence = simulate_login(term_no, start_second, login_length_second, user, enterprise, workflows)
         logins.append(login_sequence)
 
     return logins
