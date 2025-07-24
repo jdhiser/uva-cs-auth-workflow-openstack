@@ -32,7 +32,7 @@ def setup_moodle_idp(obj):
 
     )
 
-    shell = ShellHandler(control_ipv4_addr, user, "")
+    shell = ShellHandler(control_ipv4_addr, user, password=None)
     stdout, stderr, exit_status = shell.execute_cmd(cmd, verbose=verbose)
 
     return {
@@ -77,7 +77,7 @@ def setup_moodle_sp(obj):
         "sudo systemctl start shibd apache2"
     )
 
-    shell = ShellHandler(control_ipv4_addr, user, "")
+    shell = ShellHandler(control_ipv4_addr, user, password=None)
     stdout, stderr, exit_status = shell.execute_cmd(cmd, verbose=verbose)
 
     return {
@@ -105,7 +105,7 @@ def setup_moodle_idp_part2(obj):
         "sudo systemctl start jetty apache2"
     )
 
-    shell = ShellHandler(control_ipv4_addr, user, "")
+    shell = ShellHandler(control_ipv4_addr, user, password=None)
     stdout, stderr, exit_status = shell.execute_cmd(cmd, verbose=verbose)
 
     return {

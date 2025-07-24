@@ -111,12 +111,15 @@ def setup_iis(
 "@ | Set-Content $indexPath -Encoding UTF8
     }}
 
-    function Request-And-Bind-Cert ($fqdn, $caConfig, $siteName) {{
+    function Request-And-Bind-Cert ($fqdn, $caConfig, $siteName)
+    {{
         $infPath = "C:\\tmp\\webserver.inf"
         $reqPath = "C:\\tmp\\webserver.req"
         $cerPath = "C:\\tmp\\webserver.cer"
+        $rspPath = "C:\\tmp\\webserver.rsp"
         New-Item -ItemType Directory -Path (Split-Path $infPath) -Force | Out-Null
 
+        # Always regenerate .inf and .req files
         $infContent = @"
 [NewRequest]
 Subject = "CN=$fqdn"
@@ -136,26 +139,50 @@ CertificateTemplate = WebServer
 "@
         $infContent | Set-Content -Path $infPath -Encoding ASCII
 
+        # Delete any old request and cert files
+        Remove-Item -Force -ErrorAction SilentlyContinue $reqPath, $cerPath, $rspPath
+
+        # Create and submit request
         certreq -new $infPath $reqPath
         certreq -submit -config $caConfig $reqPath $cerPath
         certreq -accept -machine -f $cerPath
 
-        $cert = Get-ChildItem -Path Cert:\\LocalMachine\\My | Where-Object {{ $_.Subject -eq "CN=$fqdn" }} | Sort-Object NotBefore -Descending | Select-Object -First 1
-        if (-not $cert) {{
+        # Get the most recent matching cert
+        $cert = Get-ChildItem -Path Cert:\LocalMachine\My |
+            Where-Object {{ $_.Subject -eq "CN=$fqdn" }} |
+            Sort-Object NotBefore -Descending |
+            Select-Object -First 1
+
+        if (-not $cert)
+        {{
             Write-Error "Failed to find installed certificate for $fqdn"
             exit 1
         }}
 
+        # Configure IIS HTTPS binding if not present
         Import-Module WebAdministration
-        if (-not (Get-WebBinding -Name $siteName -Protocol "https")) {{
+
+        $bindingExists = Get-WebBinding -Name $siteName -Protocol "https" -ErrorAction SilentlyContinue
+        if (-not $bindingExists)
+        {{
             New-WebBinding -Name $siteName -Protocol "https" -Port 443 -IPAddress "*" | Out-Null
-            Push-Location IIS:\\SslBindings
-            New-Item "0.0.0.0!443" -Thumbprint $cert.Thumbprint -SSLFlags 0 | Out-Null
-            Pop-Location
         }}
 
-        Write-Host "IIS configured with HTTPS using AD CS certificate for $fqdn"
+        Push-Location IIS:\SslBindings
+        $sslBinding = Get-Item "0.0.0.0!443" -ErrorAction SilentlyContinue
+
+        if (-not $sslBinding -or $sslBinding.Thumbprint -ne $cert.Thumbprint)
+        {{
+            # Rebind if binding missing or thumbprint mismatched
+            if ($sslBinding) {{ Remove-Item "0.0.0.0!443" -Force }}
+            New-Item "0.0.0.0!443" -Thumbprint $cert.Thumbprint -SSLFlags 0 | Out-Null
+        }}
+        Pop-Location
+
+        Write-Host "IIS configured with HTTPS using new AD CS certificate for $fqdn"
     }}
+
+
 
 # === Main Script ===
 

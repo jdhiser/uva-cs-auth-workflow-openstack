@@ -35,7 +35,7 @@ def install_human_linux(node, user, control_ipv4_addr, password, cloud_config):
 
     enterprise_url = cloud_config['enterprise_url']
 
-    packages = 'python3 python3-pip virtualenv xvfb unzip build-essential git autotools-dev autoconf libncursesw5-dev libtool autoconf automake bison flex libevent-dev ncurses-dev golang-go ninja-build gettext libtool libtool-bin autoconf automake cmake g++ pkg-config unzip curl doxygen gnutls-dev libgnutls28-dev pkg-config package lists build-essential groff-base libpipeline-dev libgdbm-dev groff libtool m4 xz-utils lzip'
+    packages = 'python3 python3-pip virtualenv xvfb unzip build-essential git autotools-dev autoconf libncursesw5-dev libtool autoconf automake bison flex libevent-dev ncurses-dev golang-go ninja-build gettext libtool libtool-bin autoconf automake cmake g++ pkg-config unzip curl doxygen gnutls-dev libgnutls28-dev pkg-config build-essential groff-base libpipeline-dev libgdbm-dev groff libtool m4 xz-utils lzip'
     cmd = f"""
         set -x
         sudo rm -rf /opt/pyhuman

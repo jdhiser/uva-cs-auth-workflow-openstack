@@ -356,7 +356,7 @@ def deploy_domain_controllers(cloud_config, enterprise, enterprise_built, only):
     for node in iis_servers:
         name = node['name']
         domain = node['domain']
-        print(f"Setting up IIS servcer on {name} in domain {domain}")
+        print(f"Setting up IIS server on {name} in domain {domain}")
         control_ipv4_addr, game_ipv4_addr, password = extract_creds(enterprise_built, name)
         subca_node = leader_details[domain]["subordinate_certification_server"]["node"]
         if only is None or name in only:

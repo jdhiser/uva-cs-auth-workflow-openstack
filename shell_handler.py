@@ -217,17 +217,18 @@ Set-PSDebug -Trace 0
         script_dir = "/opt/shellhandler/scripts"
         script_path = f"{script_dir}/{basename}.sh"
         log_path = f"/var/log/{basename}.log"
+        tmp_path = f"/tmp/{basename}.sh"
 
         # Ensure the target directory exists
-        self.execute_cmd(f"mkdir -p '{script_dir}'", verbose=verbose)
+        self.execute_cmd(f"sudo mkdir -p '{script_dir}'", verbose=verbose)
 
-        # Upload the script
-        self.put_file_from_string(script_path, script_contents)
+        # Upload the script to a temporary user-writable location
+        self.put_file_from_string(tmp_path, script_contents)
 
-        # Make the script executable
-        chmod_cmd = f"chmod +x '{script_path}'"
-        self.execute_cmd(chmod_cmd, verbose=verbose)
+        # Move the script to the final location with sudo and make it executable
+        self.execute_cmd(f"sudo mv '{tmp_path}' '{script_path}'", verbose=verbose)
+        self.execute_cmd(f"sudo chmod +x '{script_path}'", verbose=verbose)
 
-        # Run the script with output redirected
-        exec_cmd = f"bash '{script_path}' > '{log_path}' 2>&1"
+        # Run the script with stdout and stderr redirected to log using sudo tee
+        exec_cmd = f"sudo bash '{script_path}' 2>&1 | sudo tee '{log_path}'"
         return self.execute_cmd(exec_cmd, verbose=verbose)
