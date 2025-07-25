@@ -170,42 +170,69 @@ If you also want to emulate logins (next section), you will also need to install
 $ ./simulate-logins.py  user-roles/user-roles.json enterprise-configs/web-wf.json post-deploy-output.json
 ```
 
+### 5. **Login Emulation**
 
-### Emulation
+#### `emulate-logins.py`
 
-Next, you can emulate the simulated logins:
+Performs the actual remote login behavior described in `logins.json`.
 
-```
-$ ./emulate-logins.py  post-deploy-output.json logins.json 
-```
+* SSHs or RDPs into the appropriate machines
+* Triggers login sequences
+* Optionally starts background activity emulation
 
-If you want to do "fast" emulation for debugging, you can add the ``--fast-debug`` option.  
-You may also want to tell python not to buffer the output and redirect all output to a file:
+✅ *Real traffic, logs, and artifacts are generated across the environment.*
 
-```
-$ PYTHONUNBUFFERED=1 ./emulate-logins.py  post-deploy-output.json logins.json  --fast-debug 2>&1 | stdbuf -o0 -e0 tee workflow.log
-```
+`monitor_confidentiality.py` can run concurrently with emulate-logins.py to collect
+confidentiality metrics.  It can be launched before, during, or after emulation.
 
-If you want to specify a seed for more deterministic emulation results:
+#### Optional arguments
 
-```
-$ ./emulate-logins.py  post-deploy-output.json logins.json  --seed 42 
-```
+* **Fast Debugging Mode:**
 
-If you would like to replay the same set of configuration parameters from logins.json, i.e., same users and relative login times, 
-specify the --rebase-time option. This will calculate a time offset to add to all timestamps in logins.json, so that login actions
-are performed relative to the current timestamp. 
+  ```bash
+  $ PYTHONUNBUFFERED=1 ./emulate-logins.py post-deploy-output.json logins.json --fast-debug 2>&1 | stdbuf -o0 -e0 tee workflow.log
+  ```
 
-```
-$ ./emulate-logins.py  post-deploy-output.json logins.json  --rebase-time 
-```
+* **Reproducibility via Seed:**
 
-Of course you can combine these:
-```
-$ PYTHONUNBUFFERED=1 ./emulate-logins.py  post-deploy-output.json logins.json  --seed 42 --rebase-time --fast-debug 2>&1 | stdbuf -o0 -e0 tee workflow.log
-```
+  ```bash
+  $ ./emulate-logins.py post-deploy-output.json logins.json --seed 42
+  ```
 
-You may optionally run `monitor_confidentiality.py` during emulation to track ongoing privileged access across the testbed.  See the section on Confidentiality.
+* **Timestamp Rebasing:**
+  Useful for replaying the same login timing structure relative to "now":
+
+  ```bash
+  $ ./emulate-logins.py post-deploy-output.json logins.json --rebase-time
+  ```
+
+* **Override Workflows:**
+  To force all users to execute the same set of workflows instead of the per-user defaults in `logins.json`:
+
+  ```bash
+  $ ./emulate-logins.py post-deploy-output.json logins.json --workflows browse_web google_search spawn_shell
+  ```
+
+* **Full Example:**
+
+  ```bash
+  $ PYTHONUNBUFFERED=1 ./emulate-logins.py post-deploy-output.json logins.json \
+      --seed 42 \
+      --rebase-time \
+      --fast-debug \
+      --workflows browse_web download_files \
+      2>&1 | stdbuf -o0 -e0 tee workflow.log
+  ```
+
+This will:
+
+* Rebase login times to now
+* Use a fixed random seed
+* Run in fast mode
+* Override all users to use `browse_web` and `download_files` workflows
+* Stream output into `workflow.log`
+
+---
 
 ### Generating Impacts on the Emulation
 

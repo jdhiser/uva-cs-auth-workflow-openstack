@@ -194,7 +194,7 @@ class OpenstackCloud:
 
         for node in enterprise['nodes']:
             name = node['name']
-            print("Creating server named " + name)
+            print("Creating node named " + name)
             os_name = node['os']
             size = node.get('size', "small")
             domain = node.get('domain', "")
@@ -258,7 +258,7 @@ class OpenstackCloud:
 
         for node in enterprise['nodes']:
             name = node['name']
-            print("Querying server named " + name)
+            print("Querying node named " + name)
             os_name = node['os']
             size = node.get('size', "small")
             domain = node.get('domain', "")

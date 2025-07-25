@@ -29,11 +29,12 @@ def install_human_windows(node, user, control_ipv4_addr, password, cloud_config)
 
 
 def install_human_linux(node, user, control_ipv4_addr, password, cloud_config):
-    print(f"Installing human plugin support as user {user} on node {node['name']} ")
+    print(f"Installing human plugin support as user {user} on node {node['name']} ", flush=True)
     shell = ShellHandler(control_ipv4_addr, user, password=None, verbose=verbose, retries=1)
     shell.put_file(human_plugin_version, '/tmp/pyhuman.zip')
 
     enterprise_url = cloud_config['enterprise_url']
+    domain = node['domain']
 
     packages = 'python3 python3-pip virtualenv xvfb unzip build-essential git autotools-dev autoconf libncursesw5-dev libtool autoconf automake bison flex libevent-dev ncurses-dev golang-go ninja-build gettext libtool libtool-bin autoconf automake cmake g++ pkg-config unzip curl doxygen gnutls-dev libgnutls28-dev pkg-config build-essential groff-base libpipeline-dev libgdbm-dev groff libtool m4 xz-utils lzip'
     cmd = f"""
@@ -44,8 +45,10 @@ def install_human_linux(node, user, control_ipv4_addr, password, cloud_config):
         sudo env DEBIAN_FRONTEND=noninteractive apt update
         sudo env DEBIAN_FRONTEND=noninteractive apt install -y {packages}
         sudo unzip /tmp/pyhuman.zip
-        sudo sed -i "s/castle.os/{enterprise_url}/" /opt/pyhuman/app/workflows/browse_shibboleth.py /opt/pyhuman/app/workflows/moodle.py
-        sudo sed -i "s/project1.os/{enterprise_url}/" /opt/pyhuman/app/workflows/browse_shibboleth.py /opt/pyhuman/app/workflows/moodle.py
+        sudo sed -i "s/castle.castle.os/{domain}.{enterprise_url}/" /opt/pyhuman/app/workflows/*.py
+        sudo sed -i "s/castle.project1.os/{domain}.{enterprise_url}/" /opt/pyhuman/app/workflows/*.py
+        sudo sed -i "s/castle.os/{enterprise_url}/" /opt/pyhuman/app/workflows/*.py
+        sudo sed -i "s/project1.os/{enterprise_url}/" /opt/pyhuman/app/workflows/*.py
         sudo virtualenv -p python3 /opt/pyhuman
         sudo /opt/pyhuman/bin/python3 -m pip install -r requirements.txt
         cd /tmp

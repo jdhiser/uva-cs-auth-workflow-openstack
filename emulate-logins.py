@@ -2,6 +2,7 @@
 
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
+from typing import Optional, Dict, Any, List
 from faker import Faker
 import threading
 import time
@@ -13,7 +14,6 @@ import argparse
 import logging
 from shell_handler import ShellHandler
 from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Any, Optional
 
 # Remove Paramiko's default handlers
 for name in ["paramiko", "paramiko.transport", "paramiko.auth_handler"]:
@@ -163,31 +163,59 @@ def run_linux_login(shell, username, password, duration, seed, workflows: Option
         Tuple[List[str], List[str], int]: stdout, stderr, and exit status
     """
     passfile = f"/tmp/shib_login.{username}"
-    base_cmd = (
-        f'echo "{username}\n{password}" > {passfile}; '
-        f'mkdir -p $HOME; '
-        f'cd ; '
-        f'PYTHONUNBUFFERED=1 stdbuf -i0 -oL -eL xvfb-run -a "/opt/pyhuman/bin/python" -u "/opt/pyhuman/human.py" '
-        f'--clustersize 5 --taskinterval 10 --taskgroupinterval 500 --stopafter {duration} '
-        f'--seed {seed}'
-    )
-
+    workflow_args = ""
     if workflows:
         workflow_args = "--workflows " + " ".join(workflows)
-        base_cmd += f' {workflow_args}'
-
-    base_cmd += f' --extra passfile {passfile}'
-
-    return shell.execute_cmd(base_cmd, verbose=True)
-
-
-def emulate_login(number, login, user_data, built, seed, logfile):
+    base_cmd = f"""
+        echo "{username}\n{password}" > {passfile}
+        mkdir -p $HOME
+        cd
+        PYTHONUNBUFFERED=1 stdbuf -i0 -oL -eL \\
+                xvfb-run -a \\
+                    "/opt/pyhuman/bin/python" \\
+                        -u "/opt/pyhuman/human.py" \\
+                        --clustersize 5 \\
+                        --taskinterval 10 \\
+                        --taskgroupinterval 500 \\
+                        --stopafter {duration} \\
+                        --seed {seed} \\
+                        {workflow_args} \\
+                        --extra passfile {passfile}
     """
-    Simulate a login attempt from one node to another using SSH or PowerShell.
 
-    The function handles IP spoofing (optional), user resolution, OS-specific login behavior,
-    logging, and result recording.
+    return shell.execute_bash_multiline(base_cmd, filename=f"run_human-{username}", path='/tmp', use_sudo=False, verbose=True)
+
+
+def emulate_login(
+    number: int,
+    login: Dict[str, Any],
+    user_data: List[Dict[str, Any]],
+    built: Dict[str, Any],
+    seed: int,
+    logfile: Optional[str],
+    workflows_override: Optional[List[str]] = None
+) -> None:
     """
+    Execute a single login emulation event.
+
+    This function handles connecting to the target node via SSH or PowerShell,
+    optionally fakes a source IP/MAC, determines the OS type, runs the login
+    simulation, and records the result. It logs output to the console and optionally
+    to a structured JSON log file.
+
+    Parameters:
+        number (int): Unique sequence number for the login attempt.
+        login (Dict[str, Any]): A single login record containing metadata such as start time, user, and duration.
+        user_data (List[Dict[str, Any]]): List of user credentials and workflow profiles from logins.json.
+        built (Dict[str, Any]): Parsed post-deployment output used to resolve node topology and addresses.
+        seed (int): Seed for random behavior in the simulated login session.
+        logfile (Optional[str]): Path to a JSON log file. If None, no file logging is performed.
+        workflows_override (Optional[List[str]]): If specified, overrides per-user workflow configuration.
+
+    Returns:
+        None
+    """
+
     login_from = login['from']
     if 'ip' not in login_from:
         raise RuntimeError("Cannot get from IP for initial connection")
@@ -207,7 +235,10 @@ def emulate_login(number, login, user_data, built, seed, logfile):
     username = user['user_profile']['username']
     fq_username = f"{username}@{domain}"
     password = user['user_profile']['password']
-    workflows = user['login_profile']['workflows']
+    if workflows_override:
+        workflows = workflows_override
+    else:
+        workflows = user['login_profile']['workflows']
 
     msg = f"#{number} from ip {from_ip_str} with mac {mac} to ip = {targ_ip}, user = {fq_username}, password = {password}"
     log_ssh("start", msg, targ_ip, [])
@@ -221,6 +252,8 @@ def emulate_login(number, login, user_data, built, seed, logfile):
     stdout2 = []
     stderr1 = []
     stderr2 = []
+    status1 = None
+    status2 = None
     try:
         if use_fake_fromip:
             del_command = apply_fake_fromip(dev, mac, from_ip_str)
@@ -344,24 +377,35 @@ def flatten_logins(logins, rebase_time=False):
     return flat_logins
 
 
-def schedule_logins(logins_file, setup_output_file, logfile=None, fast_debug=False, seed=None, rebase_time=False):
+def schedule_logins(
+    logins_file: Dict[str, Any],
+    setup_output_file: Dict[str, Any],
+    logfile: Optional[str] = None,
+    fast_debug: bool = False,
+    seed: Optional[int] = None,
+    rebase_time: bool = False,
+    workflows_override: Optional[List[str]] = None
+) -> BackgroundScheduler:
     """
     Schedule or execute login simulation events based on input login structure.
 
-    Optionally rebases time, supports immediate execution for debugging,
-    and uses a background scheduler to spread logins over real or simulated time.
+    Optionally rebases login timestamps to begin near the current time,
+    supports immediate execution for debugging, and uses a background
+    scheduler to manage login jobs either in real time or fast-forwarded.
 
-    Args:
-        logins_file (dict): JSON structure containing login entries and user data.
-        setup_output_file (dict): Setup data from prior deployment used to resolve targets.
-        logfile (str, optional): File to log execution results.
-        fast_debug (bool): If True, executes all logins immediately and quickly.
-        seed (int, optional): Seed for task randomness. If None, a random seed is generated.
-        rebase_time (bool): Whether to shift login timestamps to start near now.
+    Parameters:
+        logins_file (Dict[str, Any]): Parsed logins.json data containing users and login events.
+        setup_output_file (Dict[str, Any]): Parsed post-deploy output used to resolve targets.
+        logfile (Optional[str]): File path for writing execution logs. If None, logging is skipped.
+        fast_debug (bool): If True, schedule all logins immediately and compress time.
+        seed (Optional[int]): Seed for pseudo-random behavior. If None, generate a random seed.
+        rebase_time (bool): Whether to rebase login timestamps to start relative to now.
+        workflows_override (Optional[List[str]]): If set, overrides per-user workflows.
 
     Returns:
-        BackgroundScheduler: The scheduler instance managing deferred jobs.
+        BackgroundScheduler: The scheduler instance managing all login jobs.
     """
+
     global nowish
 
     # Extract user info and flatten login schedule into a flat list
@@ -400,7 +444,8 @@ def schedule_logins(logins_file, setup_output_file, logfile=None, fast_debug=Fal
                 user_data=users,
                 built=setup_output_file['enterprise_built'],
                 seed=seed,
-                logfile=logfile
+                logfile=logfile,
+                workflows_override=workflows_override
             )
         else:
             scheduler.add_job(
@@ -413,7 +458,8 @@ def schedule_logins(logins_file, setup_output_file, logfile=None, fast_debug=Fal
                     'user_data': users,
                     'built': setup_output_file['enterprise_built'],
                     'seed': seed,
-                    'logfile': logfile
+                    'logfile': logfile,
+                    'workflows_override': workflows_override
                 }
             )
 
@@ -439,6 +485,7 @@ def main():
     parser.add_argument("--seed", type=int, help="Specify a seed value")
     parser.add_argument("--logfile", type=str, help="Log output file", default=f"workflow.{emulation_start_time.isoformat()}.log")
     parser.add_argument("--rebase-time", action='store_true', help="Rebase timestamps from logins.json", default=False)
+    parser.add_argument("--workflows", nargs='+', help="Override all workflows with this list")
 
     args = parser.parse_args()
 
@@ -453,7 +500,8 @@ def main():
         logfile=args.logfile,
         fast_debug=args.fast_debug,
         seed=args.seed,
-        rebase_time=args.rebase_time
+        rebase_time=args.rebase_time,
+        workflows_override=args.workflows
     )
 
     scheduler.start()

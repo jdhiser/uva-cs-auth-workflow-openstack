@@ -636,8 +636,8 @@ EOT
             admin_user = 'administrator@' + fqdn_domain_name
             print("  Trying to verify domain-join of {}... creds={}:{}:{}".format(
                 name, control_ipv4_addr, admin_user, leader_admin_password))
-            shell = ShellHandler(control_ipv4_addr, admin_user, leader_admin_password)
-            stdout2, stderr2, exit_status2 = shell.execute_cmd('sudo netplan apply; realm list', verbose=verbose)
+            shell = ShellHandler(control_ipv4_addr, admin_user, leader_admin_password, timeout=30)
+            stdout2, stderr2, exit_status2 = shell.execute_cmd('realm list', verbose=verbose)
             if not 'realm-name: {}'.format(fqdn_domain_name.upper()) in str(stdout2):
                 print(f"  Realm list did not return fqdn ({fqdn_domain_name}), retrying.")
                 time.sleep(5)
@@ -911,6 +911,7 @@ def setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, lead
         raise RuntimeError(f"Failed to verify AD CS: {e}")
 
     if 'Installed' not in str(verify_stdout):
+        print(f"verify_stdout = {verify_stdout}")
         raise RuntimeError("Could not verify Subordinate AD CS installation completed.")
     print("  Verified SubordinateCA was setup properly")
 

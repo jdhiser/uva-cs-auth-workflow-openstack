@@ -74,33 +74,58 @@ class ShellHandler:
     def execute_cmd(self, cmd, verbose=False):
         if verbose or self.verbose:
             print("Final cmd to execute:" + cmd)
-        stdin, stdout, stderr = self.ssh.exec_command(cmd, bufsize=0)
+
+#        stdin, stdout, stderr = self.ssh.exec_command(cmd, bufsize=0, get_pty=True)
+#        channel = stdout.channel
+        transport = self.ssh.get_transport()
+        channel = transport.open_session()
+        channel.get_pty(width=300, height=200)
+        channel.exec_command(cmd)
+        stdout = channel.makefile('r')
+        stderr = channel.makefile_stderr('r')
+
+
         stdout_lines = []
         stderr_lines = []
-        while not stdout.channel.exit_status_ready():
-            if stdout.channel.recv_ready():
-                stdout_newlines = stdout.readlines()
-                stdout_lines += stdout_newlines
-                if verbose or self.verbose:
-                    for line in stdout_newlines:
-                        print(line)
-            if stderr.channel.recv_ready():
-                stderr_newlines = stderr.readlines()
-                stderr_lines += stderr_newlines
-                if verbose or self.verbose:
-                    for line in stderr_newlines:
+
+        stdout_buf = ""
+        stderr_buf = ""
+
+        while not channel.exit_status_ready() or channel.recv_ready() or channel.recv_stderr_ready():
+            # Read stdout if ready
+            if channel.recv_ready():
+                data = channel.recv(1024).decode("utf-8", errors="replace")
+                stdout_buf += data
+                while '\n' in stdout_buf:
+                    line, stdout_buf = stdout_buf.split('\n', 1)
+                    stdout_lines.append(line + '\n')
+                    if verbose or self.verbose:
                         print(line)
 
-        exit_status = stdout.channel.recv_exit_status()
-        stdout_newlines = stdout.readlines()
-        stdout_lines += stdout_newlines
-        stderr_newlines = stderr.readlines()
-        stderr_lines += stderr_newlines
-        if verbose or self.verbose:
-            for line in stdout_newlines:
-                print(line)
-            for line in stderr_newlines:
-                print(line)
+            # Read stderr if ready
+            if channel.recv_stderr_ready():
+                data = channel.recv_stderr(1024).decode("utf-8", errors="replace")
+                stderr_buf += data
+                while '\n' in stderr_buf:
+                    line, stderr_buf = stderr_buf.split('\n', 1)
+                    stderr_lines.append(line + '\n')
+                    if verbose or self.verbose:
+                        print(line)
+
+            time.sleep(0.1)
+
+        # Flush any remaining partial lines
+        if stdout_buf:
+            stdout_lines.append(stdout_buf)
+            if verbose or self.verbose:
+                print(stdout_buf, end="")
+
+        if stderr_buf:
+            stderr_lines.append(stderr_buf)
+            if verbose or self.verbose:
+                print(stderr_buf, end="")
+
+        exit_status = channel.recv_exit_status()
         return stdout_lines, stderr_lines, exit_status
 
     def execute_powershell(self, cmd, verbose=False, exit=False):
@@ -196,14 +221,23 @@ Set-PSDebug -Trace 0
         cmd = f'powershell -ExecutionPolicy Bypass -File "{wrapper_path}"'
         return self.execute_cmd(cmd, verbose=verbose)
 
-    def execute_bash_multiline(self, script_contents: str, filename: str, verbose: bool = False) -> Tuple[list[str], list[str], int]:
+    def execute_bash_multiline(
+        self,
+        script_contents: str,
+        filename: str,
+        verbose: bool = False,
+        path: Optional[str] = None,
+        use_sudo: bool = True
+    ) -> Tuple[list[str], list[str], int]:
         """
-        Executes a multi-line Bash script on a remote Linux machine and logs output to /var/log.
+        Executes a multi-line Bash script on a remote Linux machine and logs output to a file.
 
         Parameters:
         - script_contents: str - The Bash script to run.
         - filename: str - A base name for the script, used to generate a unique log file name. Must not include directory or extension.
         - verbose: bool -- whether to do verbose output for the user.
+        - path: Optional[str] - Directory where the script and log will be stored. Defaults to /opt/shellhandler/scripts and /var/log.
+        - use_sudo: bool - Whether to use sudo for moving, chmodding, and executing the script.
 
         Returns:
         - Tuple of (stdout_lines, stderr_lines, exit_status)
@@ -214,21 +248,32 @@ Set-PSDebug -Trace 0
             raise ValueError("filename must not have a file extension")
 
         basename = filename
-        script_dir = "/opt/shellhandler/scripts"
+        if path is None:
+            script_dir = "/opt/shellhandler/scripts"
+            log_dir = "/var/log"
+        else:
+            script_dir = path.rstrip("/")
+            log_dir = path.rstrip("/")
+
         script_path = f"{script_dir}/{basename}.sh"
-        log_path = f"/var/log/{basename}.log"
+        log_path = f"{log_dir}/{basename}.log"
         tmp_path = f"/tmp/{basename}.sh"
+        sudo = "sudo " if use_sudo else ""
 
         # Ensure the target directory exists
-        self.execute_cmd(f"sudo mkdir -p '{script_dir}'", verbose=verbose)
+        self.execute_cmd(f"{sudo}mkdir -p '{script_dir}'", verbose=verbose)
 
         # Upload the script to a temporary user-writable location
         self.put_file_from_string(tmp_path, script_contents)
 
-        # Move the script to the final location with sudo and make it executable
-        self.execute_cmd(f"sudo mv '{tmp_path}' '{script_path}'", verbose=verbose)
-        self.execute_cmd(f"sudo chmod +x '{script_path}'", verbose=verbose)
+        # Move the script to the final location if different
+        if tmp_path != script_path:
+            self.execute_cmd(f"{sudo}mv '{tmp_path}' '{script_path}'", verbose=verbose)
+        else:
+            script_path = tmp_path
 
-        # Run the script with stdout and stderr redirected to log using sudo tee
-        exec_cmd = f"sudo bash '{script_path}' 2>&1 | sudo tee '{log_path}'"
+        self.execute_cmd(f"{sudo}chmod +x '{script_path}'", verbose=verbose)
+
+        # Run the script with stdout and stderr redirected to log
+        exec_cmd = f"{sudo}stdbuf -oL bash -x '{script_path}' 2>&1 | {sudo}stdbuf -oL tee '{log_path}'"
         return self.execute_cmd(exec_cmd, verbose=verbose)
