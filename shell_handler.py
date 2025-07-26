@@ -81,9 +81,8 @@ class ShellHandler:
         channel = transport.open_session()
         channel.get_pty(width=300, height=200)
         channel.exec_command(cmd)
-        stdout = channel.makefile('r')
-        stderr = channel.makefile_stderr('r')
-
+        channel.makefile('r')
+        channel.makefile_stderr('r')
 
         stdout_lines = []
         stderr_lines = []
