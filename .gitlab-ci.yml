@@ -1,18 +1,36 @@
+
 variables:
   DOCKER_TLS_CERTDIR: "/certs"
-  IMAGE_TAG: $CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA
-  IMAGE_NAME: $CI_REGISTRY_IMAGE:$IMAGE_TAG
+  DOCKER_BUILDKIT: "1"
+  IMAGE_TAG: "${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}"
+  IMAGE_NAME: "${CI_REGISTRY_IMAGE}:${IMAGE_TAG}"
+  BUILDX_CACHE_DIR: .docker-cache   # local-only; never uploaded
 
-
-test:
+build_and_test:
   image: docker:24.0.5
   services:
     - docker:24.0.5-dind
-  tags: [ "docker" ]
+  tags: ["docker"]
+  # NOTE: no 'cache:' block and no 'artifacts:' → nothing goes to GitLab
+  before_script:
+    - |
+      set -euo pipefail
+      docker context create dind --docker "host=${DOCKER_HOST},ca=/certs/client/ca.pem,cert=/certs/client/cert.pem,key=/certs/client/key.pem" 
+      docker buildx create --name ci-builder --use dind || docker buildx use ci-builder
+      docker buildx inspect --bootstrap
   script:
     - |
-       set -x
-       ls
-       ls cicd
-       docker build -t "$IMAGE_NAME" .
-       docker run -t "$IMAGE_NAME" 
+      set -x
+      ls -la
+      docker buildx build \
+        --progress=plain \
+        --cache-from=type=local,src="${BUILDX_CACHE_DIR}" \
+        --cache-to=type=local,dest="${BUILDX_CACHE_DIR}",mode=max \
+        -t "${IMAGE_NAME}" \
+        --load \
+        .
+      docker run --rm -t "${IMAGE_NAME}"
+
+  cache: { policy: pull }   # never push
+
+

@@ -1,3 +1,5 @@
+.gitlab-ci-local-env
+.gitlab-ci-local
 *.log
 *-rc
 *.pyc

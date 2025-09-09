@@ -15,7 +15,11 @@ RUN pip install --upgrade pip setuptools wheel
 # Set workdir
 WORKDIR /app
 
-copy . /app
+COPY setup.sh /app
+COPY requirements.txt /app
 
+RUN ./setup.sh
 
-CMD ./cicd/test.sh
+COPY . /app
+
+CMD ["./cicd/test.sh"]
