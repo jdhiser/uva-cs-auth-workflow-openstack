@@ -1,0 +1,18 @@
+variables:
+  DOCKER_TLS_CERTDIR: "/certs"
+  IMAGE_TAG: $CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA
+  IMAGE_NAME: $CI_REGISTRY_IMAGE:$IMAGE_TAG
+
+
+test:
+  image: docker:24.0.5
+  services:
+    - docker:24.0.5-dind
+  tags: [ "docker" ]
+  script:
+    - |
+       set -x
+       ls
+       ls cicd
+       docker build -t "$IMAGE_NAME" .
+       docker run -t "$IMAGE_NAME" 

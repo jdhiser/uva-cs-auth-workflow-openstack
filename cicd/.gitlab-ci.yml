@@ -1,0 +1,12 @@
+stages: [test]
+
+variables:
+  DOCKER_BUILDKIT: 1
+
+test:
+  image: docker:26.1
+  services: [docker:26.1-dind]
+  script:
+    - docker build -t app:test .
+    - docker run --rm app:test pytest -q -v
+
