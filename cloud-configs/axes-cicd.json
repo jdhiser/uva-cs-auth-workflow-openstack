@@ -8,8 +8,8 @@
 	{
 		"win2k22": "ws2022-cs-license",
 		"jammy": "jammy-amd64",
-		"Jammy-IdP": "jammy-IdP",
-		"Jammy-SP": "jammy-SP"
+		"Jammy-IdP": "Jammy-IdP",
+		"Jammy-SP": "Jammy-SP"
 
 	},
 	"instance_size_map": 

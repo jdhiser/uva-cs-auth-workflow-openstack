@@ -79,13 +79,18 @@ main()
 	python3 cicd/purge-openstack.py
 
 	# add the CICD-only "private" key.
+	chmod 600 cicd/id_rsa
+	eval "$(ssh-agent -s)"
 	ssh-add cicd/id_rsa
 
-	./deploy-nodes.py -c cloud-configs/axes-cicd.json -e enterprise-configs/dc-cs-fs-moodle.json 
-	./post-deploy.py deploy-output.py
-	./simulate-logins.py user-roles/user-roles.json enterprise-configs/dc-cs-fs-moodle.json post-deploy-output.json
-	timeout 300 ./emulate-logins.py post-deploy-output.json logins.json
-	./cleanup-nodes.py deploy-output.json
+	# setup OS_CACERT for python
+	cat "$OS_CACERT" >> "$(python3 -m certifi)"
+
+	./deploy-nodes.py -c cloud-configs/axes-cicd.json -e enterprise-configs/dc-cs-fs-moodle.json  
+	./post-deploy.py deploy-output.py 
+	./simulate-logins.py user-roles/user-roles.json enterprise-configs/dc-cs-fs-moodle.json post-deploy-output.json 
+	timeout 300 ./emulate-logins.py post-deploy-output.json logins.json 
+	./cleanup-nodes.py deploy-output.json 
 
 
 	# purge any extra stuff that cleanup didn't do.
