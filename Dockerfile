@@ -1,14 +1,17 @@
-# Use a recent Python base image
-FROM python:3.12-slim
+FROM ubuntu:22.04
+ARG OS-PASSWORD
 
-# Avoid Python writing .pyc files and using buffered stdout
 ENV PYTHONUNBUFFERED=1
+ENV DEBIAN_FRONTEND=noninteractive 
+ENV TZ=Etc/UTC
 
 # Install build/test deps (adjust as needed)
-RUN apt update && apt install -y \
-        git curl ca-certificates sudo \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt clean
+RUN ln -fs /usr/share/zoneinfo/$TZ /etc/localtime; \
+    echo "$TZ" > /etc/timezone && \
+    apt-get update && apt-get install -o Dpkg::Use-Pty=0 -y \
+        python3 python3-pip git curl ca-certificates sudo  && \
+    rm -rf /var/lib/apt/lists/*  && \
+    apt clean
 
 RUN pip install --upgrade pip setuptools wheel
 

@@ -22,7 +22,9 @@ build_and_test:
     - |
       set -x
       ls -la
+      env
       docker buildx build \
+        --build-arg OS_PASSWORD="$OS_PASSWORD" \
         --progress=plain \
         --cache-from=type=local,src="${BUILDX_CACHE_DIR}" \
         --cache-to=type=local,dest="${BUILDX_CACHE_DIR}",mode=max \

@@ -1,0 +1,12 @@
+if [[ -z $OS_AUTH_URL ]]
+then
+	export OS_AUTH_URL=https://10.246.114.81:5000/v3
+fi
+export OS_IDENTITY_API_VERSION=3
+export OS_PASSWORD=cs-workflow19209
+export OS_PROJECT_DOMAIN_ID=50243b1e4ec349a68979b4b3e17778af
+export OS_PROJECT_ID=bf0c485ac5fb47808b2be72fbad21b7c
+export OS_PROJECT_NAME=cs-workflow-project
+export OS_REGION_NAME=RegionOne
+export OS_USER_DOMAIN_NAME=cs-workflow-domain
+export OS_USERNAME=cs-workflow
