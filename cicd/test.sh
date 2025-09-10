@@ -87,14 +87,14 @@ main()
 	cat "$OS_CACERT" >> "$(python3 -m certifi)"
 
 	./deploy-nodes.py -c cloud-configs/axes-cicd.json -e enterprise-configs/dc-cs-fs-moodle.json  
-	./post-deploy.py deploy-output.py 
+	./post-deploy.py deploy-output.json 
 	./simulate-logins.py user-roles/user-roles.json enterprise-configs/dc-cs-fs-moodle.json post-deploy-output.json 
 	timeout 300 ./emulate-logins.py post-deploy-output.json logins.json 
 	./cleanup-nodes.py deploy-output.json 
 
 
 	# purge any extra stuff that cleanup didn't do.
-	python3 cicd/purge-openstack.py
+#	python3 cicd/purge-openstack.py
 
 
 }
