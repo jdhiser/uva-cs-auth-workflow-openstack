@@ -32,6 +32,7 @@ build_and_test:
         --load \
         .
       docker run --rm -t "${IMAGE_NAME}"
+  timeout: 3h
 
   cache: { policy: pull }   # never push
 

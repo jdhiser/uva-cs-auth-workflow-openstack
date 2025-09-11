@@ -45,6 +45,8 @@ def setup_iis(
     )
     print(f"  Installing IIS for node {name}")
 
+    # NOTE: Added Invoke-ProcWithTimeoutAndRetry and switched all certreq calls to use it.
+    # This mitigates intermittent hangs observed on `certreq.exe -accept`.
     setup_iis_cmd = f"""
 # setup-iis-https.ps1
 #
@@ -111,6 +113,57 @@ def setup_iis(
 "@ | Set-Content $indexPath -Encoding UTF8
     }}
 
+    # Runs a process with timeout and retry. Kills on timeout.
+    function Invoke-ProcWithTimeoutAndRetry {{
+        param(
+            [Parameter(Mandatory=$true)] [string] $FilePath,
+            [Parameter(Mandatory=$true)] [string] $Arguments,
+            [int] $TimeoutSeconds = 90,
+            [int] $MaxRetries = 3,
+            [int] $BackoffSeconds = 5
+        )
+
+        for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {{
+            Write-Host "[Invoke-Proc] Starting: $FilePath $Arguments (attempt $attempt of $MaxRetries)"
+
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $FilePath
+            $psi.Arguments = $Arguments
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $proc = New-Object System.Diagnostics.Process
+            $proc.StartInfo = $psi
+
+            [void]$proc.Start()
+
+            if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {{
+                Write-Warning "[Invoke-Proc] Timeout after $TimeoutSeconds s. Killing hung process (Id=$($proc.Id))."
+                try {{ $proc.Kill(true) }} catch {{ Write-Warning "[Invoke-Proc] Kill failed: $($_)" }}
+                Start-Sleep -Seconds $BackoffSeconds
+                continue
+            }}
+
+            $stdout = $proc.StandardOutput.ReadToEnd()
+            $stderr = $proc.StandardError.ReadToEnd()
+            $exit = $proc.ExitCode
+
+            if ($exit -eq 0) {{
+                if ($stdout) {{ Write-Host "[Invoke-Proc][stdout]:`n$stdout" }}
+                if ($stderr) {{ Write-Host "[Invoke-Proc][stderr]:`n$stderr" }}
+                return 0
+            }} else {{
+                Write-Warning "[Invoke-Proc] ExitCode=$exit. Retrying in $BackoffSeconds s..."
+                if ($stdout) {{ Write-Warning "[Invoke-Proc][stdout]:`n$stdout" }}
+                if ($stderr) {{ Write-Warning "[Invoke-Proc][stderr]:`n$stderr" }}
+                Start-Sleep -Seconds $BackoffSeconds
+            }}
+        }}
+
+        Write-Error "[Invoke-Proc] Failed after $MaxRetries attempts: $FilePath $Arguments"
+        return 1
+    }}
+
     function Request-And-Bind-Cert ($fqdn, $caConfig, $siteName)
     {{
         $infPath = "C:\\tmp\\webserver.inf"
@@ -142,10 +195,17 @@ CertificateTemplate = WebServer
         # Delete any old request and cert files
         Remove-Item -Force -ErrorAction SilentlyContinue $reqPath, $cerPath, $rspPath
 
-        # Create and submit request
-        certreq -new $infPath $reqPath
-        certreq -submit -config $caConfig $reqPath $cerPath
-        certreq -accept -machine -f $cerPath
+        # Create request
+        $rc = Invoke-ProcWithTimeoutAndRetry -FilePath "C:\\Windows\\System32\\certreq.exe" -Arguments "-new `"$infPath`" `"$reqPath`"" -TimeoutSeconds 60 -MaxRetries 3 -BackoffSeconds 5
+        if ($rc -ne 0) {{ throw "certreq -new failed ($rc)" }}
+
+        # Submit request
+        $rc = Invoke-ProcWithTimeoutAndRetry -FilePath "C:\\Windows\\System32\\certreq.exe" -Arguments "-submit -config `"$caConfig`" `"$reqPath`" `"$cerPath`"" -TimeoutSeconds 120 -MaxRetries 3 -BackoffSeconds 5
+        if ($rc -ne 0) {{ throw "certreq -submit failed ($rc)" }}
+
+        # Accept certificate (this was observed to hang intermittently; now guarded)
+        $rc = Invoke-ProcWithTimeoutAndRetry -FilePath "C:\\Windows\\System32\\certreq.exe" -Arguments "-accept -machine -f `"$cerPath`"" -TimeoutSeconds 120 -MaxRetries 4 -BackoffSeconds 8
+        if ($rc -ne 0) {{ throw "certreq -accept failed ($rc)" }}
 
         # Get the most recent matching cert
         $cert = Get-ChildItem -Path Cert:\LocalMachine\My |
@@ -241,9 +301,10 @@ Write-Output "Thumbprint: $($cert2.Thumbprint)"
             },
             "verify_iis": {
                 "verify_cmd": verify_cmd,
-                "stdout": install_out,
-                "stderr": install_err,
-                "exit_status": install_status
+                "stdout": verify_out,
+                "stderr": verify_err,
+                "exit_status": verify_status
             }
         }
     }
+
