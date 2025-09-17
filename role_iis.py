@@ -139,7 +139,7 @@ def setup_iis(
 
             if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {{
                 Write-Warning "[Invoke-Proc] Timeout after $TimeoutSeconds s. Killing hung process (Id=$($proc.Id))."
-                try {{ $proc.Kill(true) }} catch {{ Write-Warning "[Invoke-Proc] Kill failed: $($_)" }}
+                try {{ if ($PSVersionTable.PSEdition -eq 'Core') {{ $proc.Kill($true) }} else {{ try {{ Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }} catch {{ }} & "$env:SystemRoot\\\System32\\taskkill.exe" /PID $($proc.Id) /T /F | Out-Null }} }} catch {{ Write-Warning "[Invoke-Proc] Kill failed: $($_)" }}
                 Start-Sleep -Seconds $BackoffSeconds
                 continue
             }}
@@ -245,6 +245,7 @@ CertificateTemplate = WebServer
 
 
 # === Main Script ===
+    {role_domains.gpupdate_str}
 
     $fqdn = "{fqdn}"
     $siteName = "Default Web Site"
@@ -307,4 +308,3 @@ Write-Output "Thumbprint: $($cert2.Thumbprint)"
             }
         }
     }
-

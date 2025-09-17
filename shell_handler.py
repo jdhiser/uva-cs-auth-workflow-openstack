@@ -5,7 +5,12 @@ import socket
 import os
 import datetime
 from typing import Tuple, Optional
-from paramiko.ssh_exception import SSHException
+from paramiko.ssh_exception import (
+    SSHException,
+    AuthenticationException,
+    BadAuthenticationType,
+    NoValidConnectionsError,
+)
 
 
 class ShellHandler:
@@ -50,7 +55,15 @@ class ShellHandler:
                     timeout=timeout,
                 )
                 break
-            except SSHException as e:
+
+            except (
+                    AuthenticationException,
+                    BadAuthenticationType,
+                    NoValidConnectionsError,
+                    SSHException,
+                    OSError,
+                    EOFError
+            ) as e:
                 if attempt < retries - 1:
                     delay = base_delay * (2 ** attempt)
                     if delay > 30:

@@ -8,6 +8,32 @@ from shell_handler import ShellHandler
 domain_safe_mode_password = 'hello!321'
 verbose = False
 
+gpupdate_str = """$MaxRetries = 15       # how many times to retry
+$DelaySeconds = 60    # wait time between retries
+
+for ($i = 1; $i -le $MaxRetries; $i++) {
+    Write-Host "[$i/$MaxRetries] Running gpupdate /force..."
+    gpupdate /force
+
+    # check exit code – 0 usually means success
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "gpupdate succeeded."
+        break
+    }
+
+    Write-Warning "gpupdate failed (exit code $LASTEXITCODE)."
+    if ($i -lt $MaxRetries) {
+        Write-Host "Waiting $DelaySeconds seconds before retry..."
+        Start-Sleep -Seconds $DelaySeconds
+    }
+}
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "gpupdate failed after $MaxRetries attempts."
+}
+
+"""
+
 
 def deploy_forest(cloud_config, name, control_ipv4_addr, game_ipv4_addr, password, domain):
 
@@ -157,7 +183,7 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
     exit_status = []
     attempts = 0
     try:
-        print(f"  Trying  to install AD and join domain on {name}")
+        print(f"  Trying to install AD and join domain on {name}")
         shell = ShellHandler(control_ipv4_addr, user, password, retries=2)
         attempts += 1
         stdout2, stderr2, exit_status2 = shell.execute_powershell_multiline(adcmd, filename="ad-install.ps1", verbose=verbose)
@@ -182,7 +208,7 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
     while not status_received and attempts < 60:
         try:
             attempts += 1
-            print("  Trying  to install AD and join domain")
+            print("  Trying to install AD and join domain")
             shell = ShellHandler(control_ipv4_addr, user, leader_admin_password, retries=1)
             stdout2, stderr2, exit_status2 = shell.execute_powershell("get-addomain", verbose=verbose)
             if 'ReplicaDirectoryServers' not in str(stdout2):
@@ -304,7 +330,7 @@ Set-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\
             attempts += 1
             shell = ShellHandler(control_ipv4_addr, domain_name + '\\' + user, leader_admin_password)
             stdout2, stderr2, exit_status2 = shell.execute_powershell(
-                'echo "the domain is $env:userdomain" ', verbose=verbose)
+                'gpupdate /force; echo "the domain is $env:userdomain" ', verbose=verbose)
             status_received = True
             print(f"  Reboot Completed for {name} by verifying computer is in the domain")
         except paramiko.ssh_exception.SSHException:
@@ -765,19 +791,36 @@ def setup_root_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_deta
     print(f"  Installing Root AD CS for node {name}")
 
     # Construct the PowerShell command as a multiline string
-    adcs_cmd = f"""
+    adcs_cmd = gpupdate_str + f"""
+
         Install-WindowsFeature AD-Domain-Services
         Get-ADDomain
         Install-WindowsFeature ADCS-Cert-Authority
         Import-Module ADCSDeployment
-        Install-AdcsCertificationAuthority -CAType EnterpriseRootCA `
-            -CryptoProviderName 'RSA#Microsoft Software Key Storage Provider' `
-            -KeyLength 2048 `
-            -HashAlgorithmName SHA256 `
-            -ValidityPeriod Years -ValidityPeriodUnits 5 `
-            -CACommonName "{domain_name}-RootCA" `
-            -Force
-        Write-Host 'AD CS RootCA installation completed.'
+        for ($i = 1; $i -le $MaxRetries; $i++) {{
+            Write-Host "[$i/$MaxRetries] Running Install-AdcsCertificationAuthority"
+            try {{
+                Install-AdcsCertificationAuthority -CAType EnterpriseRootCA `
+                    -CryptoProviderName 'RSA#Microsoft Software Key Storage Provider' `
+                    -KeyLength 2048 `
+                    -HashAlgorithmName SHA256 `
+                    -ValidityPeriod Years -ValidityPeriodUnits 5 `
+                    -CACommonName "{domain_name}-RootCA" `
+                    -Force
+                Write-Host "Install-AdcsCertificationAuthority succeeded."
+                break
+            }} catch {{
+                Write-Warning "Install-AdcsCertificationAuthority failed."
+                if ($i -lt $MaxRetries) {{
+                    Write-Host "Waiting $DelaySeconds seconds before retry..."
+                    Start-Sleep -Seconds $DelaySeconds
+                }}
+                else {{
+                    Write-Error "Install-AdcsCertificationAuthority failed after $MaxRetries attempts."
+                }}
+            }}
+        }}
+
         """
 
     # Create a shell session to the target machine
@@ -890,11 +933,61 @@ def setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, lead
     cmd = f"""
         Install-WindowsFeature AD-Domain-Services
         Get-ADDomain
+        whoami /groups
+        echo %LOGONSERVER%
+        klist
+        w32tm /query /status
         Install-WindowsFeature ADCS-Cert-Authority
         Import-Module ADCSDeployment
-        Install-AdcsCertificationAuthority -CAType EnterpriseSubordinateCA -Force -CACommonName "{domain_name}-SubCA"
-        Write-Host 'AD CS SubordinateCA request created.'
-    """
+        echo "LOGONSERVER=$env:LOGONSERVER"
+        nltest /dsgetdc:{domain_name}
+
+        $maxRetries = 20
+        $retryDelay = 30
+        $success = $false
+
+        for ($i = 1; $i -le $maxRetries; $i++) {{
+            Write-Host ("[{0}] === Attempt $i of $maxRetries ===" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"))
+            Write-Host "LOGONSERVER env var: $env:LOGONSERVER"
+            try {{
+                $rootdse = [ADSI]"LDAP://RootDSE"
+                Write-Host "Connected Config NC: $($rootdse.configurationNamingContext)"
+                Write-Host "Connected to DC: $($rootdse.dnsHostName)"
+            }} catch {{
+                Write-Warning "Could not read RootDSE: $($_.Exception.Message)"
+            }}
+
+            try {{
+                Install-AdcsCertificationAuthority -CAType EnterpriseSubordinateCA -Force -CACommonName "{domain_name}-SubCA"
+                Write-Host "AD CS SubordinateCA request created (attempt $i)."
+                $success = $true
+                break
+            }} catch {{
+                Write-Warning "Attempt $i failed: $($_.Exception.Message)"
+                Write-Warning ("Full exception: {0}" -f ($_.Exception | Format-List * | Out-String))
+
+                # Collect additional context to help debugging
+                Write-Host "Current Kerberos tickets:"
+                klist
+                Write-Host "Current group memberships:"
+                whoami /groups
+                Write-Host "Time sync status:"
+                w32tm /query /status
+                Write-Host "Preferred DC info:"
+                nltest /sc_query:{domain_name}
+
+                if ($i -lt $maxRetries) {{
+                    Write-Host "Sleeping $retryDelay seconds before retry..."
+                    Start-Sleep -Seconds $retryDelay
+                }} else {{
+                    Write-Error "AD CS SubordinateCA installation failed after $maxRetries attempts."
+                    Write-Host "Last 50 lines of certocm.log for context:"
+                    Get-Content -Tail 50 C:\\Windows\\certocm.log
+                    throw
+                }}
+            }}
+        }}
+"""
 
     shell = ShellHandler(control_ipv4_addr, domain_name + '\\' + 'administrator', leader_admin_password)
     try:
@@ -929,7 +1022,6 @@ def setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, lead
     }
 
 
-# Existing link_subordinate_to_root() function retained below
 def link_subordinate_to_root(root_info, sub_info):
     """
     Links a subordinate CA to its root CA by signing the subordinate's request on the root CA
@@ -965,8 +1057,10 @@ def link_subordinate_to_root(root_info, sub_info):
     remote_req = f"C:\\tmp\\{sub_name}.req"
     remote_cer = f"C:\\tmp\\{sub_name}.cer"
 
-    sub_shell = ShellHandler(sub_ip, f"{domain}\\Administrator", root_password)
-    root_shell = ShellHandler(root_ip, f"{domain}\\Administrator", root_password)
+    admin_upn = f"{domain}\\Administrator"
+
+    sub_shell = ShellHandler(sub_ip, admin_upn, root_password, retries=50)
+    root_shell = ShellHandler(root_ip, admin_upn, root_password, retries=50)
 
     # Ensure C:\tmp exists on both systems
     sub_shell.execute_cmd("mkdir C:\\tmp", verbose=verbose)
