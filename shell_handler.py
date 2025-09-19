@@ -211,7 +211,7 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 Start-Transcript -Path "{log_path}" -Force
 
 try {{
-    Write-Host "=== Starting install-iis.ps1 ==="
+    Write-Host "=== Starting ps1 ==="
     $command = @'
 Set-PSDebug -Trace 1
 . "{script_path}"
@@ -220,7 +220,7 @@ Set-PSDebug -Trace 0
     $output = powershell -ExecutionPolicy Bypass -NoProfile -Command $command *>&1
     $exitCode = $LASTEXITCODE
     $output | ForEach-Object {{ Write-Host $_ }}
-    Write-Host "=== Finished install-iis.ps1 ==="
+    Write-Host "=== Finished ps1 ==="
     exit $exitCode
 }} finally {{
     Stop-Transcript

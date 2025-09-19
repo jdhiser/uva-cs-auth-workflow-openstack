@@ -1118,6 +1118,8 @@ for ($i = 0; $i -lt $maxRetries; $i++) {
     Write-Host "Attempt $($i + 1) to run certutil -installcert..."
 
     $job = Start-Job -ScriptBlock {
+        certutil -f -v -addstore CA C:\\tmp\\subca.cer
+        # sometimes hangs?  
         certutil -installcert -f -v C:\\tmp\\subca.cer
     }
 
