@@ -1,6 +1,6 @@
 if [[ -z $OS_AUTH_URL ]]
 then
-	export OS_AUTH_URL=https://10.246.114.81:5000/v3
+	export OS_AUTH_URL=https://10.246.112.101:5000/v3
 fi
 export OS_IDENTITY_API_VERSION=3
 export OS_PASSWORD=cs-workflow19209
