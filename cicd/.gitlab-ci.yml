@@ -1,0 +1,20 @@
+stages: [test]
+
+variables:
+  DOCKER_BUILDKIT: 1
+
+
+
+# Reusable anchor for any job that must not overlap OpenStack usage
+.use_openstack: &use_openstack
+  resource_group: cs-workflow-openstack-project   # one-at-a-time across pipelines in THIS project
+
+
+test:
+  image: docker:26.1
+  services: [docker:26.1-dind]
+  <<: *use_openstack
+  script:
+    - docker build -t app:test .
+    - docker run --rm app:test pytest -q -v
+

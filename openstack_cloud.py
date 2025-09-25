@@ -19,7 +19,7 @@ class OpenstackCloud:
         self.network_name = None
         self.project_id = os.environ.get('OS_PROJECT_ID')
         self.project_name = os.environ.get('OS_PROJECT_NAME')
-        self.verify= 'OS_CACERT' in os.environ
+        self.verify = 'OS_CACERT' in os.environ
         self.enterprise_url = None
 
         self.sess = self.get_session()
@@ -194,7 +194,7 @@ class OpenstackCloud:
 
         for node in enterprise['nodes']:
             name = node['name']
-            print("Creating server named " + name)
+            print("Creating node named " + name)
             os_name = node['os']
             size = node.get('size', "small")
             domain = node.get('domain', "")
@@ -258,7 +258,7 @@ class OpenstackCloud:
 
         for node in enterprise['nodes']:
             name = node['name']
-            print("Querying server named " + name)
+            print("Querying node named " + name)
             os_name = node['os']
             size = node.get('size', "small")
             domain = node.get('domain', "")

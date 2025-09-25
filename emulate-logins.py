@@ -1,7 +1,10 @@
 #!/usr/bin/env python
 
+from apscheduler.executors.pool import ThreadPoolExecutor
+from apscheduler.schedulers.background import BackgroundScheduler
+from typing import Optional, Dict, Any, List
+from faker import Faker
 import threading
-import traceback
 import time
 import sys
 import os
@@ -11,21 +14,14 @@ import argparse
 import logging
 from shell_handler import ShellHandler
 from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Any, Optional
 
 # Remove Paramiko's default handlers
 for name in ["paramiko", "paramiko.transport", "paramiko.auth_handler"]:
     plogger = logging.getLogger(name)
-    plogger.setLevel(logging.WARN)  
-    plogger.handlers.clear()       
+    plogger.setLevel(logging.WARN)
+    plogger.handlers.clear()
     plogger.propagate = False
 
-# faker stuff
-from faker import Faker
-
-# scheduler stuff.
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.executors.pool import ThreadPoolExecutor
 
 # configure logging
 logging.basicConfig(
@@ -51,7 +47,6 @@ timestamp_format = '%Y-%m-%d %H:%M:%S.%f'
 file_lock = threading.Lock()
 
 
-
 def contains_bad_term(lines: List[str]) -> bool:
     """
     Check if any line in a list of strings contains suspicious terms.
@@ -63,6 +58,7 @@ def contains_bad_term(lines: List[str]) -> bool:
         bool: True if 'pwned' or 'pwnd' is found (case insensitive), False otherwise.
     """
     return any("pwned" in line.lower() or "pwnd" in line.lower() for line in lines)
+
 
 def record_log(logfile: Optional[str], new_record: Dict[str, Any]) -> None:
     """
@@ -92,8 +88,7 @@ def record_log(logfile: Optional[str], new_record: Dict[str, Any]) -> None:
             file.flush()
 
 
-def log_ssh(status: str, message: str, host_ip: str, ssh_output: List[str], step_name:Optional[str] = None) -> None:
-
+def log_ssh(status: str, message: str, host_ip: str, ssh_output: List[str], step_name: Optional[str] = None) -> None:
     """
     Log an SSH connection status message in JSON format to stdout.
 
@@ -115,7 +110,7 @@ def log_ssh(status: str, message: str, host_ip: str, ssh_output: List[str], step
         "host_ip": host_ip,
     }
     if status != "start":
-        log_entry["integrity"] =  0 if contains_bad_term(ssh_output) else 1
+        log_entry["integrity"] = 0 if contains_bad_term(ssh_output) else 1
 
     if step_name is not None:
         log_entry["step_name"] = step_name
@@ -126,9 +121,11 @@ def get_target_node(built, node_name):
     """Retrieve a node definition from the deployment metadata."""
     return next(filter(lambda node: node['name'] == node_name, built['deployed']['nodes']))
 
+
 def get_user_credentials(user_data, username):
     """Fetch a user entry matching the given username."""
     return next(filter(lambda user: user['user_profile']['username'] == username, user_data))
+
 
 def apply_fake_fromip(dev, mac, from_ip):
     """Optionally set up a dummy network interface with spoofed MAC and IP."""
@@ -143,30 +140,82 @@ def apply_fake_fromip(dev, mac, from_ip):
     del_command = f'sudo ip link delete {dev} type dummy'
     return del_command
 
+
 def run_windows_login(shell, username, password):
     """Run a simple echo command to simulate login on Windows."""
     cmd = f'echo "{username}\n{password}"'
     return shell.execute_powershell(cmd)
 
-def run_linux_login(shell, username, password, duration, seed):
-    """Simulate a Linux login using the pyhuman automation script."""
+
+def run_linux_login(shell, username, password, duration, seed, workflows: Optional[List[str]] = None):
+    """
+    Simulate a Linux login using the pyhuman automation script.
+
+    Parameters:
+        shell: ShellHandler instance
+        username (str): Username for login
+        password (str): Corresponding password
+        duration (int): How long to run the login session
+        seed (int): Random seed for reproducibility
+        workflows (List[str], optional): List of workflows to pass to human.py
+
+    Returns:
+        Tuple[List[str], List[str], int]: stdout, stderr, and exit status
+    """
     passfile = f"/tmp/shib_login.{username}"
-    cmd = (
-        f'echo "{username}\n{password}" > {passfile}; '
-        f'stdbuf -i0 -oL -eL xvfb-run -a "/opt/pyhuman/bin/python" -u "/opt/pyhuman/human.py" '
-        f'--clustersize 5 --taskinterval 10 --taskgroupinterval 500 --stopafter {duration} '
-        f'--seed {seed} --extra passfile {passfile}'
-    )
-    return shell.execute_cmd(cmd, verbose=True)
-
-def emulate_login(number, login, user_data, built, seed, logfile):
+    workflow_args = ""
+    if workflows:
+        workflow_args = "--workflows " + " ".join(workflows)
+    base_cmd = f"""
+        echo "{username}\n{password}" > {passfile}
+        mkdir -p $HOME
+        cd
+        PYTHONUNBUFFERED=1 stdbuf -i0 -oL -eL \\
+                xvfb-run -a \\
+                    "/opt/pyhuman/bin/python" \\
+                        -u "/opt/pyhuman/human.py" \\
+                        --clustersize 5 \\
+                        --taskinterval 10 \\
+                        --taskgroupinterval 500 \\
+                        --stopafter {duration} \\
+                        --seed {seed} \\
+                        {workflow_args} \\
+                        --extra passfile {passfile}
     """
-    Simulate a login attempt from one node to another using SSH or PowerShell.
 
-    The function handles IP spoofing (optional), user resolution, OS-specific login behavior,
-    logging, and result recording.
+    return shell.execute_bash_multiline(base_cmd, filename=f"run_human-{username}", path='/tmp', use_sudo=False, verbose=True)
+
+
+def emulate_login(
+    number: int,
+    login: Dict[str, Any],
+    user_data: List[Dict[str, Any]],
+    built: Dict[str, Any],
+    seed: int,
+    logfile: Optional[str],
+    workflows_override: Optional[List[str]] = None
+) -> None:
     """
-    # Validate login source and destination
+    Execute a single login emulation event.
+
+    This function handles connecting to the target node via SSH or PowerShell,
+    optionally fakes a source IP/MAC, determines the OS type, runs the login
+    simulation, and records the result. It logs output to the console and optionally
+    to a structured JSON log file.
+
+    Parameters:
+        number (int): Unique sequence number for the login attempt.
+        login (Dict[str, Any]): A single login record containing metadata such as start time, user, and duration.
+        user_data (List[Dict[str, Any]]): List of user credentials and workflow profiles from logins.json.
+        built (Dict[str, Any]): Parsed post-deployment output used to resolve node topology and addresses.
+        seed (int): Seed for random behavior in the simulated login session.
+        logfile (Optional[str]): Path to a JSON log file. If None, no file logging is performed.
+        workflows_override (Optional[List[str]]): If specified, overrides per-user workflow configuration.
+
+    Returns:
+        None
+    """
+
     login_from = login['from']
     if 'ip' not in login_from:
         raise RuntimeError("Cannot get from IP for initial connection")
@@ -174,7 +223,6 @@ def emulate_login(number, login, user_data, built, seed, logfile):
     if 'node' not in login_to:
         raise RuntimeError("Cannot get destination node for initial connection")
 
-    # Extract connection details
     from_ip_str = login_from['ip']
     mac = fake.mac_address()
     dev = 'v' + mac.replace(':', '')
@@ -183,13 +231,15 @@ def emulate_login(number, login, user_data, built, seed, logfile):
     targ_ip = to_node['addresses'][0]['addr']
     is_windows = 'windows' in to_node['enterprise_description']['roles']
 
-    # Extract credentials
     user = get_user_credentials(user_data, login['user'])
     username = user['user_profile']['username']
     fq_username = f"{username}@{domain}"
     password = user['user_profile']['password']
+    if workflows_override:
+        workflows = workflows_override
+    else:
+        workflows = user['login_profile']['workflows']
 
-    # Log connection start
     msg = f"#{number} from ip {from_ip_str} with mac {mac} to ip = {targ_ip}, user = {fq_username}, password = {password}"
     log_ssh("start", msg, targ_ip, [])
     log_ssh("start", msg, targ_ip, [], "connect")
@@ -198,44 +248,41 @@ def emulate_login(number, login, user_data, built, seed, logfile):
     shell = None
     del_command = None
 
-    stdout1=[]
-    stdout2=[]
-    stderr1=[]
-    stderr2=[]
+    stdout1 = []
+    stdout2 = []
+    stderr1 = []
+    stderr2 = []
+    status1 = None
+    status2 = None
     try:
-        # Apply fake IP if configured
         if use_fake_fromip:
             del_command = apply_fake_fromip(dev, mac, from_ip_str)
         else:
             from_ip_str = None
 
-        # Initialize shell session
         shell = ShellHandler(targ_ip, fq_username, password=password, from_ip=from_ip_str, verbose=verbose)
 
-        # Send login metadata
         cmd1 = 'echo ' + json.dumps(login) + " > action.json"
         stdout1, stderr1, status1 = shell.execute_cmd(cmd1)
 
-        # Run OS-specific login
         if is_windows:
             stdout2, stderr2, status2 = run_windows_login(shell, username, password)
         else:
-            stdout2, stderr2, status2 = run_linux_login(shell, username, password, login['login_length'], seed)
+            stdout2, stderr2, status2 = run_linux_login(shell, username, password, login['login_length'], seed, workflows)
 
         logger.info("ssh successful for windows" if is_windows else "ssh successful for linux")
 
     except KeyboardInterrupt:
         logger.warning(f"Aborting due to KeyboardInterrupt: {msg}")
         raise
-    except Exception as e:
-        log_ssh("error", msg, targ_ip, stdout1+stderr1+stdout2+stderr2, "connect")
-        log_ssh("error", msg, targ_ip, stdout1+stderr1+stdout2+stderr2)
+    except Exception:
+        log_ssh("error", msg, targ_ip, stdout1 + stderr1 + stdout2 + stderr2, "connect")
+        log_ssh("error", msg, targ_ip, stdout1 + stderr1 + stdout2 + stderr2)
         logger.exception(f"FAILED CONNECTION {'windows' if is_windows else 'linux'}: {msg}")
     finally:
         if del_command:
             os.system(del_command)
 
-    # Compose output log record
     new_output = {
         "cmd": cmd1,
         "stdout": stdout1 + stdout2,
@@ -244,12 +291,10 @@ def emulate_login(number, login, user_data, built, seed, logfile):
         "exit_status": [status1, status2]
     }
 
-    #record_log(logfile, new_output)
-    log_ssh("success", msg, targ_ip, stdout1+stderr1+stdout2+stderr2, "connect")
-    log_ssh("success", msg, targ_ip, stdout1+stderr1+stdout2+stderr2)
+    log_ssh("success", msg, targ_ip, stdout1 + stderr1 + stdout2 + stderr2, "connect")
+    log_ssh("success", msg, targ_ip, stdout1 + stderr1 + stdout2 + stderr2)
     login_results.append(new_output)
 
-    # Reset variables for memory hygiene
     shell = None
 
 
@@ -265,6 +310,7 @@ def load_json_file(name: str):
     """
     with open(name) as f:
         return json.load(f)
+
 
 def get_earliest_login(logins):
     """
@@ -293,6 +339,7 @@ def get_earliest_login(logins):
                 earliest = login_start
 
     return earliest
+
 
 def flatten_logins(logins, rebase_time=False):
     """
@@ -330,24 +377,35 @@ def flatten_logins(logins, rebase_time=False):
     return flat_logins
 
 
-def schedule_logins(logins_file, setup_output_file, logfile=None, fast_debug=False, seed=None, rebase_time=False):
+def schedule_logins(
+    logins_file: Dict[str, Any],
+    setup_output_file: Dict[str, Any],
+    logfile: Optional[str] = None,
+    fast_debug: bool = False,
+    seed: Optional[int] = None,
+    rebase_time: bool = False,
+    workflows_override: Optional[List[str]] = None
+) -> BackgroundScheduler:
     """
     Schedule or execute login simulation events based on input login structure.
 
-    Optionally rebases time, supports immediate execution for debugging,
-    and uses a background scheduler to spread logins over real or simulated time.
+    Optionally rebases login timestamps to begin near the current time,
+    supports immediate execution for debugging, and uses a background
+    scheduler to manage login jobs either in real time or fast-forwarded.
 
-    Args:
-        logins_file (dict): JSON structure containing login entries and user data.
-        setup_output_file (dict): Setup data from prior deployment used to resolve targets.
-        logfile (str, optional): File to log execution results.
-        fast_debug (bool): If True, executes all logins immediately and quickly.
-        seed (int, optional): Seed for task randomness. If None, a random seed is generated.
-        rebase_time (bool): Whether to shift login timestamps to start near now.
+    Parameters:
+        logins_file (Dict[str, Any]): Parsed logins.json data containing users and login events.
+        setup_output_file (Dict[str, Any]): Parsed post-deploy output used to resolve targets.
+        logfile (Optional[str]): File path for writing execution logs. If None, logging is skipped.
+        fast_debug (bool): If True, schedule all logins immediately and compress time.
+        seed (Optional[int]): Seed for pseudo-random behavior. If None, generate a random seed.
+        rebase_time (bool): Whether to rebase login timestamps to start relative to now.
+        workflows_override (Optional[List[str]]): If set, overrides per-user workflows.
 
     Returns:
-        BackgroundScheduler: The scheduler instance managing deferred jobs.
+        BackgroundScheduler: The scheduler instance managing all login jobs.
     """
+
     global nowish
 
     # Extract user info and flatten login schedule into a flat list
@@ -355,7 +413,7 @@ def schedule_logins(logins_file, setup_output_file, logfile=None, fast_debug=Fal
     flat_logins = flatten_logins(logins_file['logins'], rebase_time)
 
     # Configure the scheduler with a large thread pool to handle concurrency
-    executors = { 'default': ThreadPoolExecutor(2000) }
+    executors = {'default': ThreadPoolExecutor(2000)}
     scheduler = BackgroundScheduler(executors=executors)
 
     # Use provided seed or fallback to stored/random
@@ -386,7 +444,8 @@ def schedule_logins(logins_file, setup_output_file, logfile=None, fast_debug=Fal
                 user_data=users,
                 built=setup_output_file['enterprise_built'],
                 seed=seed,
-                logfile=logfile
+                logfile=logfile,
+                workflows_override=workflows_override
             )
         else:
             scheduler.add_job(
@@ -399,7 +458,8 @@ def schedule_logins(logins_file, setup_output_file, logfile=None, fast_debug=Fal
                     'user_data': users,
                     'built': setup_output_file['enterprise_built'],
                     'seed': seed,
-                    'logfile': logfile
+                    'logfile': logfile,
+                    'workflows_override': workflows_override
                 }
             )
 
@@ -425,6 +485,7 @@ def main():
     parser.add_argument("--seed", type=int, help="Specify a seed value")
     parser.add_argument("--logfile", type=str, help="Log output file", default=f"workflow.{emulation_start_time.isoformat()}.log")
     parser.add_argument("--rebase-time", action='store_true', help="Rebase timestamps from logins.json", default=False)
+    parser.add_argument("--workflows", nargs='+', help="Override all workflows with this list")
 
     args = parser.parse_args()
 
@@ -439,7 +500,8 @@ def main():
         logfile=args.logfile,
         fast_debug=args.fast_debug,
         seed=args.seed,
-        rebase_time=args.rebase_time
+        rebase_time=args.rebase_time,
+        workflows_override=args.workflows
     )
 
     scheduler.start()
@@ -469,7 +531,7 @@ def main():
 
     return 0
 
+
 # Standard CLI entry point
 if __name__ == '__main__':
     sys.exit(main())
-

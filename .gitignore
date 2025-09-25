@@ -1,5 +1,8 @@
+.gitlab-ci-local-env
+.gitlab-ci-local
 *.log
-*-rc
+project1-rc
 *.pyc
 *.swp
 /*.json
+tmp

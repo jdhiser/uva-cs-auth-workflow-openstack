@@ -17,7 +17,8 @@ A user-roles file is a json object with an array of roles.  A small, sample file
             "activity_max_logins_per_hour":  "5",
             "activity_daily_min_hours":  [ "0", "3", "3", "3", "3", "3", "0" ],
             "activity_daily_max_hours":  [ "2", "10", "10", "10", "10", "6", "2" ],
-            "terminals_open":  "2"
+            "terminals_open":  "2",
+	    "workflows": [ 'browse_youtube' ]
         },
     ]
 }
@@ -37,3 +38,5 @@ The fields mean:
 `activity_min_logins_per_hour` -- int.  Minimum number of logins per working hour.
 `activity_max_logins_per_hour` -- int.  Maximum number of logins per working hour.
 `terminals_open` -- int.  How many terminals this user has open simulateously.
+`workflows` -- array[str].  The Mitre Caldera Human Plugin workflows to run.  
+	See ../Downloads/workflows.zip:app/workflows/*.py for the possible workflows.

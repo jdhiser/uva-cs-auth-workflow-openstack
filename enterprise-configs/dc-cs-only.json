@@ -1,0 +1,49 @@
+{
+	"nodes":
+	[
+		{ 
+			"name": "dc1",
+			"os": "win2k22",
+			"domain": "castle",
+			"roles": [ "domain_controller_leader", "windows" ]
+		},
+		{
+			"name": "dc2" ,
+			"os": "win2k22",
+			"domain": "castle",
+			"roles": [ "domain_controller", "windows" ]
+		},
+		{
+			"name": "root-ca-srv", 
+			"os": "win2k22",
+			"domain": "castle",
+			"roles": [ "ad-root-certificate-server", "windows" ]
+		},
+		{
+			"name": "sub-ca-srv" ,
+			"os": "win2k22",
+			"domain": "castle",
+			"roles": [ "ad-subordinate-certificate-server", "windows" ]
+		},
+		{
+			"name": "iis" ,
+			"os": "win2k22",
+			"domain": "castle",
+			"roles": [ "iis", "windows" ]
+		},
+                {
+                        "name": "linep1",
+                        "os": "jammy",
+                        "domain": "castle",
+                        "roles": [ "endpoint", "linux", "personal" ],
+                        "user": "standard user"
+                },
+                {
+                        "name": "winep1",
+                        "os": "win2k22",
+                        "domain": "castle",
+                        "roles": [ "endpoint", "windows", "personal" ],
+                        "user": "standard user"
+                }
+	]
+}

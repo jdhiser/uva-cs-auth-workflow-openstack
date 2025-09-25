@@ -1,0 +1,21 @@
+{
+	"cloud_type": "openstack",
+	"os_env_file":	"cicd/cs-workflow-rc",
+	"private_key_file":	"cicd/id_rsa",
+	"external_network": "2734e108-f572-43a0-8cc3-1b51631c41ba",
+	"keypair": "cicdKeyPair",
+	"image_map":
+	{
+		"win2k22": "ws2022-cs-license",
+		"jammy": "jammy-amd64",
+		"Jammy-IdP": "Jammy-IdP",
+		"Jammy-SP": "Jammy-SP"
+
+	},
+	"instance_size_map": 
+	{
+		"small": "m1.small"
+	},
+	"security_group": "fa98687f-a2ff-4777-9eb6-5891d111a933",
+	"enterprise_url": "uva-ci.os"
+}

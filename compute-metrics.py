@@ -18,6 +18,8 @@ Fields:
     - integrity_1: Count of integrity==1
     - integrity_0: Count of integrity==0
 """
+
+
 class RawMetricCounts(TypedDict):
     total: int
     start: int
@@ -41,6 +43,8 @@ Fields:
     - integrity_failure: Count of integrity==0
     - integrity: Integrity ratio or "N/A" if no integrity data
 """
+
+
 class WorkflowStepMetrics(TypedDict):
     availability: Any
     num_started: int

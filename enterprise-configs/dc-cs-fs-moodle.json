@@ -1,0 +1,67 @@
+{
+	"nodes":
+	[
+		{ 
+			"name": "dc1",
+			"os": "win2k22",
+			"domain": "domcas",
+			"roles": [ "domain_controller_leader", "windows" ]
+		},
+		{
+			"name": "dc2" ,
+			"os": "win2k22",
+			"domain": "domcas",
+			"roles": [ "domain_controller", "windows" ]
+		},
+		{
+			"name": "root-ca-srv", 
+			"os": "win2k22",
+			"domain": "domcas",
+			"roles": [ "ad-root-certificate-server", "windows" ]
+		},
+		{
+			"name": "sub-ca-srv" ,
+			"os": "win2k22",
+			"domain": "domcas",
+			"roles": [ "ad-subordinate-certificate-server", "windows" ]
+		},
+		{
+			"name": "iis" ,
+			"os": "win2k22",
+			"domain": "domcas",
+			"roles": [ "iis", "windows" ]
+		},
+		{
+                        "name": "identity",
+                        "os": "Jammy-IdP",
+                        "domain": "domcas",
+                        "roles": [ "idp", "linux" ]
+                },
+                {
+                        "name": "service" ,
+                        "os": "Jammy-SP",
+                        "domain": "domcas",
+                        "roles": [ "sp", "linux" ]
+                },
+                {
+                        "name": "csfiles" ,
+                        "os": "jammy",
+                        "domain": "domcas",
+                        "roles": [ "linux", "fileserver" ]
+                },
+                {
+                        "name": "linep1",
+                        "os": "jammy",
+                        "domain": "domcas",
+                        "roles": [ "endpoint", "linux", "personal" ],
+                        "user": "standard user"
+                },
+                {
+                        "name": "winep1",
+                        "os": "win2k22",
+                        "domain": "domcas",
+                        "roles": [ "endpoint", "windows", "personal" ],
+                        "user": "standard user"
+                }
+	]
+}
