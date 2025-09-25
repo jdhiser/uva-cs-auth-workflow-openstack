@@ -63,6 +63,27 @@ make_ca_bundle()
 }
 
 
+# Helper: run one workflow, capture output to <workflow>.out, enforce 100s timeout,
+# and verify workflow-level success ("status": "success" without "step_name").
+run_workflow()
+{
+	local wf="$1"
+	local time_limit="$2"
+	timeout $time_limit ./emulate-logins.py post-deploy-output.json logins.json --fast-debug --workflows "$wf" 2>&1 | tee "${wf}.out"
+	if [[ ${PIPESTATUS[0]} -ne 124 ]]
+	then
+		echo "Emulate logins ($wf) exited before 100 seconds"
+		exit 1
+	fi
+
+	# Check for top-level success in the log
+	if ! grep -v '"step_name"' "${wf}.out" | grep -q '"status": "success"'
+	then
+		echo "ERROR: No workflow-level success found for workflow: $wf"
+		exit 1
+	fi
+}
+
 main()
 {
 	./setup.sh
@@ -89,20 +110,15 @@ main()
 	./deploy-nodes.py -c cloud-configs/axes-cicd.json -e enterprise-configs/dc-cs-fs-moodle.json  || exit 1
 	./post-deploy.py deploy-output.json || exit 1
 	./simulate-logins.py user-roles/user-roles.json enterprise-configs/dc-cs-fs-moodle.json post-deploy-output.json || exit 1
-	timeout 300 ./emulate-logins.py post-deploy-output.json logins.json  --fast-debug --workflows moodle build_software browse_iis 2>&1 |tee el.out
-	if [[ ${PIPESTATUS[0]} -ne 124 ]]
-	then
-		echo 'Emulate logins exited before 300 seconds'
-		exit 1
-	fi
+
+	run_workflow moodle 100
+	run_workflow build_software 300
+	run_workflow browse_iis 100
+
 	./cleanup-nodes.py deploy-output.json || exit 1
 
-
-	# purge any extra stuff that cleanup didn't do.
-#	python3 cicd/purge-openstack.py
 	exit 0
-
-
 }
 
+main "$@"
 main "$@"
