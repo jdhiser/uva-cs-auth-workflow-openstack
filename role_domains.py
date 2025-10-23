@@ -153,6 +153,7 @@ def deploy_forest(cloud_config, name, control_ipv4_addr, game_ipv4_addr, passwor
         ipconfig /registerdns
         dcdiag /fix  """
     )
+
     shell = ShellHandler(control_ipv4_addr, user, password)
     stdout3, stderr3, exit_status3 = shell.execute_powershell_multiline(remove_control_network_from_dns_cmd, filename="fix-dns.ps1", verbose=verbose)
 

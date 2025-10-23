@@ -25,12 +25,12 @@ def node_to_default_user(node):
 def install_human_windows(node, user, control_ipv4_addr, password, cloud_config):
     """
     Install minimal dependencies to run the MITRE Caldera 'human' plugin on Windows
-    using the embedded Python at C:\\python (installed by join_domain_windows).
+    using the embedded Python at C:\python (installed by join_domain_windows).
 
     Steps:
-      1) Ensure C:\\python exists and enable 'import site' and '.' in pythonXY._pth
+      1) Ensure C:\python exists and enable 'import site' and '.' in pythonXY._pth
       2) Upload the human plugin zip to the target host with ShellHandler.put_file
-      3) Download and run get-pip.py to install pip into C:\\python\\Scripts
+      3) Download and run get-pip.py to install pip into C:\python\Scripts
       4) Upgrade pip/setuptools/wheel
       5) Expand the uploaded zip and install dependencies from its requirements.txt
 
@@ -221,21 +221,29 @@ Start-Process msiexec -ArgumentList "/i `"$msi`" /qn /norestart ALLUSERS=1" -Wai
 Write-Host "[OK] Windows human install done."
 '''
 
-    shell = ShellHandler(control_ipv4_addr, user, password, verbose=verbose, retries=10, timeout=60)
+    try:
+        shell = ShellHandler(control_ipv4_addr, user, password, verbose=verbose, retries=10, timeout=60)
 
-    # Upload the plugin zip to the Windows host before running the PowerShell steps
-    if not os.path.exists(plugin_zip_local):
+        # Upload the plugin zip to the Windows host before running the PowerShell steps
+        if not os.path.exists(plugin_zip_local):
+            return {
+                "node_details": node,
+                "stdout": "",
+                "stderr": f"Local plugin zip not found: {plugin_zip_local}",
+                "exit_status": 1,
+            }
+
+        # Ensure remote directory exists and upload the file
+        shell.put_file(plugin_zip_local, remote_zip_path)
+
+        stdout, stderr, exit_status = shell.execute_powershell_multiline(ps, 'install-human.ps1', verbose=verbose)
+    except Exception as ex:
         return {
             "node_details": node,
             "stdout": "",
-            "stderr": f"Local plugin zip not found: {plugin_zip_local}",
+            "stderr": f"{type(ex).__name__}: {ex}",
             "exit_status": 1,
         }
-
-    # Ensure remote directory exists and upload the file
-    shell.put_file(plugin_zip_local, remote_zip_path)
-
-    stdout, stderr, exit_status = shell.execute_powershell_multiline(ps, 'install-human.ps1', verbose=verbose)
 
     return {
         "node_details": node,
