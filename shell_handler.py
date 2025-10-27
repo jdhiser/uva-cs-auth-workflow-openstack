@@ -1,78 +1,180 @@
+from __future__ import annotations
 import time
 import paramiko
 import sys
 import socket
 import os
 import datetime
-from typing import Tuple, Optional
+from typing import Optional, Dict, Tuple
 from paramiko.ssh_exception import (
-    SSHException,
     AuthenticationException,
     BadAuthenticationType,
     NoValidConnectionsError,
+    SSHException,
 )
 
 
+def ssh_backoff(
+    attempt: int,
+    retries: int,
+    base_delay: float,
+    host: str,
+    error: Exception,
+) -> None:
+    """
+    Handle backoff delay and logging for failed attempts.
+
+    Parameters:
+        attempt: Zero-based attempt index within the retry loop.
+        retries: Total number of attempts allowed.
+        base_delay: Base delay seconds for exponential backoff.
+        host: Target host, for logging.
+        error: The exception that caused the failure.
+    Returns:
+        None. Either sleeps for the backoff duration, or raises the final error.
+    """
+    if attempt < retries - 1:
+        delay = min(60.0, base_delay * (2 ** attempt))
+        print(
+            f"  [WARN] SSH connection to {host} failed on attempt {attempt + 1}/{retries}: "
+            f"{error}. Retrying in {delay:.1f}s..."
+        )
+        time.sleep(delay)
+    else:
+        print(
+            f"  [ERROR] SSH connection to {host} failed after {retries} attempts: {error}"
+        )
+        raise error
+
+
+def try_connect(
+    ssh: paramiko.SSHClient,
+    base_params: Dict[str, object],
+    overrides: Dict[str, object],
+    label: str,
+    verbose: bool,
+) -> Tuple[bool, Optional[Exception]]:
+    """
+    Attempt a connection using provided param overrides.
+
+    Parameters:
+        ssh: The SSHClient instance to use.
+        base_params: Shared kwargs for SSHClient.connect().
+        overrides: Per-attempt overrides (e.g., password, allow_agent flags).
+        label: Human-friendly label for logs (e.g., "password", "agent/keys").
+        verbose: Whether to print informational/debug logs.
+    Returns:
+        (success_flag, error) where error is the exception if failed.
+    """
+    params = dict(base_params)
+    params.update(overrides)
+
+    try:
+        ssh.connect(**params)
+        if verbose:
+            print(
+                f"  [INFO] SSH connected ({label}) to "
+                f"{params.get('hostname')}:{params.get('port')}"
+            )
+        return True, None
+    except (
+        AuthenticationException,
+        BadAuthenticationType,
+        NoValidConnectionsError,
+        SSHException,
+        OSError,
+        EOFError,
+    ) as e:
+        if verbose:
+            print(f"  [DEBUG] {label} auth failed: {e}")
+        return False, e
+
+
 class ShellHandler:
+    """
+    Manage an SSH/SFTP session with optional source-IP binding and robust retry logic.
+
+    For each *retry attempt*:
+      1) Try password auth (if provided).
+      2) If that fails, immediately try agent/keys.
+    Then (if both fail) sleep with capped exponential backoff and try again.
+    """
 
     def __init__(
-            self,
-            host,
-            user,
-            password,
-            from_ip: Optional[str] = None,
-            verbose: bool = False,
-            timeout: int = 30,
-            retries: int = 10,
-            base_delay: float = 5.0
-    ):
-
+        self,
+        host: str,
+        user: str,
+        password: Optional[str],
+        from_ip: Optional[str] = None,
+        verbose: bool = False,
+        timeout: int = 30,
+        retries: int = 10,
+        base_delay: float = 5.0,
+        port: int = 22,
+    ) -> None:
         self.verbose = verbose
-        self.sock = None
+        self.sock: Optional[socket.socket] = None
+
+        # Optional source address binding
         if from_ip is not None:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.bind((from_ip, 0))           # set source address
-            self.sock.connect((host, 22))       # connect to the destination address
+            self.sock.bind((from_ip, 0))
+            self.sock.connect((host, port))  # Paramiko accepts a pre-connected socket
 
         self.ssh = paramiko.SSHClient()
         self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        allow_agent = True
-        look_for_keys = True
-        if password is not None:
-            allow_agent = False
-            look_for_keys = False
 
+        base_params: Dict[str, object] = {
+            "hostname": host,
+            "port": port,
+            "username": user,
+            "timeout": timeout,
+            "sock": self.sock,
+            # Default to disabling agent/key use unless explicitly enabled
+            "allow_agent": False,
+            "look_for_keys": False,
+        }
+
+        last_error: Optional[Exception] = None
         for attempt in range(retries):
-            try:
-                self.ssh.connect(
-                    host,
-                    username=user,
-                    password=password,
-                    allow_agent=allow_agent,
-                    look_for_keys=look_for_keys,
-                    port=22,
-                    sock=self.sock,
-                    timeout=timeout,
-                )
+            if self.verbose:
+                print(f"  [INFO] SSH connect attempt {attempt + 1}/{retries} to {host}:{port}")
+
+            connected = False
+
+            # Try password auth first (if provided)
+#            if password is not None:
+            if self.verbose:
+                print("  [INFO] Trying password auth")
+            connected, last_error = try_connect(
+                self.ssh,
+                base_params,
+                {"password": password, "allow_agent": True, "look_for_keys": True},
+                "password",
+                self.verbose,
+            )
+
+            # If password not used or failed, try agent/keys
+#            if not connected:
+#                if self.verbose:
+#                    print("  [INFO] Trying key auth")
+#                connected, last_error = try_connect(
+#                    self.ssh,
+#                    base_params,
+#                    {"allow_agent": True, "look_for_keys": True},
+#                    "agent/keys",
+#                    self.verbose,
+#                )
+
+            if connected:
+                if self.verbose:
+                    print("  [INFO] Connected!")
                 break
 
-            except (
-                    AuthenticationException,
-                    BadAuthenticationType,
-                    NoValidConnectionsError,
-                    SSHException,
-                    OSError,
-                    EOFError
-            ) as e:
-                if attempt < retries - 1:
-                    delay = base_delay * (2 ** attempt)
-                    if delay > 30:
-                        delay = 30
-                    print(f"  [WARN] SSH connection to {host} failed (attempt {attempt + 1}/{retries}): {e}. Retrying in {delay:.1f}s...")
-                    time.sleep(delay)
-                else:
-                    print(f"  [ERROR] SSH connection to {host} failed after {retries} attempts: {e}")
-                    raise
+            # Both modes failed for this attempt
+            ssh_backoff(attempt, retries, base_delay, host, last_error or SSHException("unknown error"))
+
+        # Open SFTP after successful SSH connect
         self.sftp = self.ssh.open_sftp()
 
     def __del__(self):

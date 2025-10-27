@@ -1,7 +1,6 @@
 import time
-import socket
-import paramiko
 import role_fs
+import paramiko
 from shell_handler import ShellHandler
 
 
@@ -41,41 +40,43 @@ def deploy_forest(cloud_config, name, control_ipv4_addr, game_ipv4_addr, passwor
     domain_name = domain + '.' + cloud_config['enterprise_url']
     print("  Setting safe-mode password for domain to " + password)
 
-    cmd = (
-        "reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\TimeProviders\\NtpServer /v Enabled /t REG_DWORD /d 1 /f; "
-        "reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\Parameters /v Type /t REG_SZ /d NTP /f; "
-        "reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\Config /v AnnounceFlags /t REG_DWORD /d 5 /f; "
-        "tzutil /s 'Eastern Standard Time' ;  "
-        "w32tm /config /manualpeerlist:'pool.ntp.org,0x1' /syncfromflags:manual /reliable:yes /update; "
-        "net stop w32time; "
-        "net start w32time; "
-        "w32tm /resync /force; "
-        "w32tm /config /manualpeerlist:\"time.google.com 0.pool.ntp.org 1.pool.ntp.org\" /syncfromflags:manual /reliable:yes /update ;"
-        "net stop w32time ;"
-        "net start w32time ;"
-        "w32tm /resync ;"
-        "w32tm /query /status ;"
-        "Install-windowsfeature AD-domain-services ; "
-        "Import-Module ADDSDeployment ;  "
-        "$secure=ConvertTo-SecureString -asplaintext -string {} -force ; "
-        "Install-ADDSForest -domainname {} -SafeModeAdministratorPassword $secure -verbose -NoRebootOnCompletion:$true -Force:$true ; "
-        "wget https://www.python.org/ftp/python/3.12.1/python-3.12.1-embed-amd64.zip -Outfile python.zip; "
-        "Expand-Archive -force .\\python.zip; "
-        "mv python c:\\ ; "
-        "icacls \"c:\\python\" /grant:r \"users:(RX)\" /C ; "
-        "$oldpath = (Get-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager\Environment' -Name PATH).path; "
-        "$newpath = \"$oldpath;C:\python\" ; "
-        "Set-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager\Environment' -Name PATH -Value $newpath "
-    ).format(domain_safe_mode_password, domain_name)
+    adcmd = (f"""
+        net user administrator {password}
+        net user administrator /passwordreq:yes
+        reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\TimeProviders\\NtpServer /v Enabled /t REG_DWORD /d 1 /f
+        reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\Parameters /v Type /t REG_SZ /d NTP /f
+        reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\Config /v AnnounceFlags /t REG_DWORD /d 5 /f
+        tzutil /s 'Eastern Standard Time'
+        w32tm /config /manualpeerlist:'pool.ntp.org,0x1' /syncfromflags:manual /reliable:yes /update
+        net stop w32time
+        net start w32time
+        w32tm /resync /force
+        w32tm /config /manualpeerlist:\"time.google.com 0.pool.ntp.org 1.pool.ntp.org\" /syncfromflags:manual /reliable:yes /update
+        net stop w32time
+        net start w32time
+        w32tm /resync
+        w32tm /query /status
+        Install-windowsfeature AD-domain-services
+        Import-Module ADDSDeployment
+        $secure=ConvertTo-SecureString -asplaintext -string {domain_safe_mode_password} -force
+        Install-ADDSForest -domainname {domain_name} -SafeModeAdministratorPassword $secure -verbose -NoRebootOnCompletion:$true -Force:$true
+        wget https://www.python.org/ftp/python/3.12.1/python-3.12.1-embed-amd64.zip -Outfile python.zip
+        Expand-Archive -force .\\python.zip
+        mv python c:\\
+        icacls \"c:\\python\" /grant:r \"users:(RX)\" /C
+        $oldpath = (Get-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager\Environment' -Name PATH).path
+        $newpath = \"$oldpath;C:\python\"
+        Set-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager\Environment' -Name PATH -Value $newpath
+        """)
 
     if verbose:
-        print("  Register forest command:" + cmd)
+        print("  Register forest command:" + adcmd)
 
     shell = ShellHandler(control_ipv4_addr, user, password)
-    stdout, stderr, exit_status = shell.execute_powershell(cmd, verbose=verbose)
+    stdout, stderr, exit_status = shell.execute_powershell_multiline(adcmd, filename="deploy-forest.ps1", verbose=verbose)
     try:
         shell.execute_powershell('Restart-computer -force', verbose=verbose)
-    except socket.error:
+    except Exception:
         pass
 
     time.sleep(10)
@@ -90,6 +91,7 @@ def deploy_forest(cloud_config, name, control_ipv4_addr, game_ipv4_addr, passwor
             output = str(stdout2) + str(stderr2)
             if f'DNSRoot                            : {domain_name}' not in output:
                 print("  Connected, but did not get domain info.  Trying again...")
+                print(f"  output={output}")
                 # server is starting up, try again.
                 status_received = False
                 time.sleep(10)
@@ -115,17 +117,17 @@ def deploy_forest(cloud_config, name, control_ipv4_addr, game_ipv4_addr, passwor
     print("  Reboot Complete.  Waiting for domain controller service to start.")
     # wait for domain controller to be up/ready.
 
-    remove_control_network_from_dns_cmd = (
-        "set-dnsclient -interfacealias 'control-adapter' -registerthisconnectionsaddress 0 ; "
-        " $srv=$(get-dnsserversetting -all) ;"
-        f" $srv.ListeningIPAddress=@( {game_ipv4_addr} ) ;"
-        " set-dnsserversetting -inputobject $srv; "
-        " ipconfig /flushdns  ; "
-        " ipconfig /registerdns  ; "
-        " dcdiag /fix  "
-    )
+    remove_control_network_from_dns_cmd = (f"""
+        set-dnsclient -interfacealias 'control-adapter' -registerthisconnectionsaddress 0
+        $srv=$(get-dnsserversetting -all)
+        $srv.ListeningIPAddress=@( {game_ipv4_addr} )
+        set-dnsserversetting -inputobject $srv
+        ipconfig /flushdns
+        ipconfig /registerdns
+        dcdiag /fix  """
+                                           )
     shell = ShellHandler(control_ipv4_addr, user, password)
-    stdout3, stderr3, exit_status3 = shell.execute_powershell(remove_control_network_from_dns_cmd, verbose=verbose)
+    stdout3, stderr3, exit_status3 = shell.execute_powershell_multiline(remove_control_network_from_dns_cmd, filename="fix-dns.ps1", verbose=verbose)
 
     return {
         "deploy_forest_results": {"name": name, "control_addr": control_ipv4_addr, "game_addr": game_ipv4_addr, "password": password, "domain": domain},
@@ -293,7 +295,27 @@ def join_domain_windows(name, leader_admin_password, control_ipv4_addr, game_ipv
 $passwd = convertto-securestring -AsPlainText -Force -String {leader_admin_password}
 $cred = new-object -typename System.Management.Automation.PSCredential -argumentlist 'administrator@{domain_name}',$passwd
 Set-DnsClientServerAddress -serveraddress ({domain_ips}) -interfacealias 'game-adapter'
-Add-Computer -Credential $cred -domainname {fqdn_domain_name}
+
+# Retry Add-Computer up to 3 times
+$maxRetries = 5
+$retryDelay = 60
+for ($i = 1; $i -le $maxRetries; $i++) {{
+    try {{
+        Write-Host "Attempt $i to join domain {fqdn_domain_name}..."
+        Add-Computer -Credential $cred -DomainName {fqdn_domain_name} -ErrorAction Stop
+        Write-Host "Successfully joined the domain."
+        break
+    }} catch {{
+        Write-Warning "Attempt $i failed: $($_.Exception.Message)"
+        if ($i -lt $maxRetries) {{
+            Write-Host "Waiting $retryDelay seconds before retry..."
+            Start-Sleep -Seconds $retryDelay
+        }} else {{
+            Write-Error "All attempts to join domain failed."
+            exit 1
+        }}
+    }}
+}}
 
 if (Test-Path 'C:\\Python') {{
     Remove-Item -Path 'C:\\Python' -Recurse -Force
@@ -316,7 +338,7 @@ Set-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\
     try:
         shell = ShellHandler(control_ipv4_addr, user, password)
         shell.execute_powershell('Restart-computer -force', verbose=verbose)
-    except socket.error:
+    except Exception:
         pass
 
     print(f"  Waiting for reboot of windows domain member {name} with ip={control_ipv4_addr}.")
@@ -669,19 +691,15 @@ EOT
                 time.sleep(5)
             else:
                 status_received = True
-        except paramiko.ssh_exception.SSHException:
+        except Exception:
             print(f"  Waiting domain join to complete for ip={control_ipv4_addr}.")
 
-            time.sleep(5)
-            pass
-        except paramiko.ssh_exception.NoValidConnectionsError:
-            print(f"  Waiting for domain join to complete for {name} with ip={control_ipv4_addr}.")
             time.sleep(5)
             pass
 
     try:
         stdout2
-    except Exception as _:   # noqa: F841
+    except Exception:
         errstr = 'Connect after reboot.'
         raise RuntimeError(errstr)
 
@@ -763,9 +781,6 @@ def setup_root_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_deta
     - dict: stdout, stderr, and exit_status from the shell command
     """
 
-    import paramiko
-    from shell_handler import ShellHandler
-
     name = node['name']
     domain_name = node['domain']
     enterprise_name = cloud_config['enterprise_url']
@@ -830,7 +845,7 @@ def setup_root_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_deta
     try:
         adcs_stdout, adcs_stderr, adcs_exit_status = shell.execute_powershell_multiline(
             adcs_cmd, verbose=verbose, filename='install-rootca.ps1')
-    except paramiko.ssh_exception.AuthenticationException as e:
+    except Exception as e:
         raise RuntimeError(f"Authentication failed: {e}")
 
     # Verify Root CA
@@ -993,7 +1008,7 @@ def setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, lead
     try:
         adcs_stdout, adcs_stderr, adcs_exit_status = shell.execute_powershell_multiline(
             cmd, filename="install-subca.ps1", verbose=verbose)
-    except paramiko.ssh_exception.AuthenticationException as e:
+    except Exception as e:
         raise RuntimeError(f"Authentication failed: {e}")
 
     # Verify Subordinate CA role installed
@@ -1119,7 +1134,7 @@ for ($i = 0; $i -lt $maxRetries; $i++) {
 
     $job = Start-Job -ScriptBlock {
         certutil -f -v -addstore CA C:\\tmp\\subca.cer
-        # sometimes hangs?  
+        # sometimes hangs?
         certutil -installcert -f -v C:\\tmp\\subca.cer
     }
 
