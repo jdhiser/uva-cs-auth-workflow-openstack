@@ -93,7 +93,11 @@ main()
 
 	source cicd/cs-workflow-rc
 	export OS_CACERT=$HOME/ca-bundle.pem
-	make_ca_bundle 10.246.114.81 5000 $OS_CACERT
+
+	local auth_ip=$(echo "$OS_AUTH_URL" | sed -E 's~.*https?://([^:/]+).*~\1~')
+	local auth_port=$(echo "$OS_AUTH_URL" | sed -nE 's~.*:([0-9]+)(/.*)?~\1~p')
+
+	make_ca_bundle $auth_ip $auth_port $OS_CACERT
 
 	# clean out any old openstack servers, etc.
 	# this project is for CICD only.

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 from shell_handler import ShellHandler
-import paramiko
 import socket
 import time
 
@@ -96,7 +95,7 @@ def impact_availability(node: dict, enterprise: dict) -> dict:
                 result["error"] = "Node still responds to SSH after shutdown command."
                 result["success"] = False
                 result["verified"] = False
-            except (socket.timeout, ConnectionRefusedError, OSError):
+            except Exception:
                 result["success"] = exit_status == 0 and verified
             finally:
                 sock.close()
@@ -106,7 +105,7 @@ def impact_availability(node: dict, enterprise: dict) -> dict:
         if not result["success"] and result["error"] is None:
             result["error"] = "Command failed or output verification failed."
 
-    except paramiko.SSHException as e:
+    except Exception as e:
         result["error"] = str(e)
 
     return result
@@ -298,7 +297,7 @@ Write-Output "finished pwning sshd"
         if not result["success"]:
             result["error"] = "One or more commands failed or verification tag not found."
 
-    except paramiko.SSHException as e:
+    except Exception as e:
         result["error"] = str(e)
 
     return result
@@ -387,7 +386,7 @@ OUTER
             stdout, stderr, exit_status = shell.execute_cmd(cmd)
             result["verified"] = exit_status == 0 and verify_tag.lower() in str(stdout + stderr).lower()
 
-    except paramiko.SSHException as e:
+    except Exception as e:
         result["error"] = str(e)
         return result
 
@@ -408,7 +407,7 @@ OUTER
             check_out, check_err, check_code = impact_shell.execute_cmd("sudo cat /etc/passwd")
             result["verified"] = check_code == 0 and str(check_out).strip() != ""
 
-    except paramiko.SSHException as e:
+    except Exception as e:
         result["error"] = str(e)
         return result
 

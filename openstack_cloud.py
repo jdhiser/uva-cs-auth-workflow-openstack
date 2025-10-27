@@ -9,6 +9,8 @@ from collections import defaultdict
 from neutronclient.v2_0 import client as neutronclient
 import glanceclient
 import openstack
+from openstack import exceptions as os_exc
+import re
 
 
 class OpenstackCloud:
@@ -142,30 +144,70 @@ class OpenstackCloud:
         print("  Found image id: " + found_image['id'])
         return found_image
 
-    def get_network_id(self, network_name):
+    def get_network_id(self, name_or_id):
+        """
+        Resolve a Neutron network's UUID from a name or UUID.
+        Returns the UUID string, or None if not found.
+        Lookup order:
+          1) Heat resource map (if a stack resource matches exactly)
+          2) Direct UUID lookup (if it looks like a UUID)
+          3) Name lookup via the Network proxy
+        """
+        # 1) Try Heat stack resources that belong to this project and are prefixed with the project name
         project = self.conn.identity.find_project(self.project_id)
         project_name = project.name
 
         stack_resource_map = {
-            stack.name: list(self.conn.orchestration.resources(stack.name)) for stack in self.conn.list_stacks()
+            stack.name: list(self.conn.orchestration.resources(stack.name))
+            for stack in self.conn.list_stacks()
             if stack.location.project.id == self.project_id and stack.name.startswith(f"{project_name}_")
         }
 
-        network_id_list = [
-            resource.physical_resource_id
-            for resource_list in stack_resource_map.values()
-            for resource in resource_list
-            if resource.id == network_name
-        ]
+        for resource_list in stack_resource_map.values():
+            for resource in resource_list:
+                # If the caller passed the logical resource id from Heat, match it
+                if resource.id == name_or_id and getattr(resource, "physical_resource_id", None):
+                    return resource.physical_resource_id
 
-        result = network_id_list[0] if len(network_id_list) > 0 else None
-        # try to find a network outside the stack list if it might be a public network.
-        if result is None:
-            result = self.conn.get_network_by_id(network_name)
-        if result is None:
-            result = self.conn.find_network(network_name)
+        # 2) If it looks like a UUID, try a direct lookup-by-id
+        uuid_like = re.compile(r"^[0-9a-fA-F-]{36}$")
+        if uuid_like.match(name_or_id):
+            try:
+                net = self.conn.get_network_by_id(name_or_id)
+                if net:
+                    # net may be dict-like or a resource; normalize to string id
+                    return getattr(net, "id", net.get("id"))
+            except os_exc.ResourceNotFound:
+                # fall through to name lookup
+                pass
 
-        return result
+        # 3) Use the modern network proxy to resolve by name (or id)
+        # Prefer strict lookup first
+        try:
+            net = self.conn.network.find_network(name_or_id, ignore_missing=False)
+            return net.id
+        except os_exc.ResourceNotFound:
+            # Try a broader search (exact name match among all visible networks)
+            matches = [n for n in self.conn.network.networks(name=name_or_id)]
+            if len(matches) == 1:
+                return matches[0].id
+            elif len(matches) > 1:
+                # Prefer a unique shared/external network if possible
+                def is_shared_or_external(n):
+                    # neutron attrs: "router:external" can be on .is_router_external or in .to_dict()
+                    ext = getattr(n, "is_router_external", None)
+                    if ext is None:
+                        ext = n.to_dict().get("router:external", False)
+                    return getattr(n, "is_shared", False) or bool(ext)
+
+                shared_ext = [n for n in matches if is_shared_or_external(n)]
+                if len(shared_ext) == 1:
+                    return shared_ext[0].id
+                # Ambiguous
+                names = ", ".join(f"{n.name}({n.id})" for n in matches)
+                raise RuntimeError(f"Multiple networks match '{name_or_id}': {names}. Please specify the UUID.")
+            else:
+                return None
 
     def find_network_by_name(self, name):
         ret = self.neutronClient.list_networks()
