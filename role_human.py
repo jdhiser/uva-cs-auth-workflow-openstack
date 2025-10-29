@@ -184,7 +184,7 @@ Start-Process msiexec -ArgumentList "/i `"$msi`" /qn /norestart ALLUSERS=1" -Wai
 Write-Host "[OK] Windows human install done."
 '''
 
-    shell = ShellHandler(control_ipv4_addr, user, password, verbose=verbose, retries=3, timeout=60)
+    shell = ShellHandler(control_ipv4_addr, user, password, verbose=verbose, retries=10, timeout=60)
 
     # Upload the plugin zip to the Windows host before running the PowerShell steps
     if not os.path.exists(plugin_zip_local):
@@ -198,7 +198,7 @@ Write-Host "[OK] Windows human install done."
     # Ensure remote directory exists and upload the file
     shell.put_file(plugin_zip_local, remote_zip_path)
 
-    stdout, stderr, exit_status = shell.execute_powershell_multiline(ps, 'install-human.ps1', verbose=verbose, retries=10)
+    stdout, stderr, exit_status = shell.execute_powershell_multiline(ps, 'install-human.ps1', verbose=verbose)
 
     return {
         "node_details": node,
