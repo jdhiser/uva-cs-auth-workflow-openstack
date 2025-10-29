@@ -253,10 +253,16 @@ def deploy_human(obj):
     user = node_to_default_user(node)
     control_ipv4_addr = obj['control_addr']
     password = obj['password']
-    print(f"Setting up human plugin for {node['name']}")
+    domain = node['domain']
+    print(f"Setting up human plugin for {domain}\\{node['name']}")
 
     if user == "Administrator":
-        return install_human_windows(node, user, control_ipv4_addr, password, cloud_config)
+        if domain is not None:
+            leader = obj['domain_leader']
+            leader_admin_password = leader['admin_pass']
+            return install_human_windows(node, f"{user}@{domain}", control_ipv4_addr, leader_admin_password, cloud_config)
+        else:
+            return install_human_windows(node, user, control_ipv4_addr, password, cloud_config)
     elif user == "ubuntu":
         return install_human_linux(node, user, control_ipv4_addr, password, cloud_config)
     else:

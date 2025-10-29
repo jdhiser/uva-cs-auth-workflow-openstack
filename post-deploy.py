@@ -114,15 +114,19 @@ def deploy_human(cloud_config, enterprise, enterprise_built, only):
     nodes = enterprise['nodes']
     nodes = [x for x in nodes if only is None or x['name'] in only]
     results = []
+    leader_details = enterprise_built['setup']['setup_domains']['domain_leaders']
     for node in nodes:
         name = node['name']
+        domain = node.get('domain')
         control_ipv4_addr, game_ipv4_addr, password = extract_creds(enterprise_built, name)
         access_list.append({
             "node": node,
             "control_addr": control_ipv4_addr,
             "cloud_config": cloud_config,
             "game_addr": game_ipv4_addr,
-            "password": str(password)
+            "password": str(password),
+            "domain": domain,
+            "domain_leader": leader_details[domain]
         })
 
     if use_parallel:
