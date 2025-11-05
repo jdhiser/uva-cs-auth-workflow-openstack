@@ -1,17 +1,47 @@
 #!/usr/bin/env python3
+"""
+collect-logs.py
+---------------
+Baseline and post-action log collection with optional workflow-driven login emulation.
+
+Updates (2025-11-04, v2):
+* --logins is REQUIRED whenever any --workflow is present (validated early).
+* Sanity-check ALL workflow params before baseline:
+  - Validate user exists (if provided) in --logins.
+  - Validate host exists (if provided) in post-deploy nodes.
+  - Confirm --logins file exists and has at least one user.
+* For each workflow:
+  - If user/host omitted, choose at random and PRINT the selections (always visible).
+  - Persist selections to per-step `workflow.meta.json`.
+* Still uses only the [[user@]host=]name format for --workflow.
+* Does NOT create steps/workflow-<name>-runXX directories.
+* Parallelism default is per-node (effectively unlimited). Verbosity tiers unchanged.
+"""
+
 import argparse
 import json
+import os
+import random
 import re
 import sys
 import time
-import os
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-# Global store for per-step metadata
+import importlib.util
+
+# ------------------------------ dynamic import ------------------------------
+emu_spec = importlib.util.spec_from_file_location("emulate_logins", Path("emulate-logins.py"))
+if emu_spec is None or emu_spec.loader is None:
+    raise SystemExit("Could not locate emulate-logins.py in the working directory.")
+emulate_logins = importlib.util.module_from_spec(emu_spec)
+emu_spec.loader.exec_module(emulate_logins)
+
+
 GLOBAL_META_FOR_STEPS: Dict[str, Any] | None = None
 
-# ------------------------------- helpers ------------------------------------
+# --------------------------------- helpers -----------------------------------
 def load_json(p: str) -> dict:
     try:
         return json.loads(Path(p).read_text(encoding="utf-8"))
@@ -19,11 +49,10 @@ def load_json(p: str) -> dict:
         print(f"[error] failed to load {p}: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
         return {}
 
-def fp(secret) -> str:
-    if not secret:
-        return "len=0 sha256=--------"
-    import hashlib as _h
-    return f"len={len(str(secret))} sha256={_h.sha256(str(secret).encode()).hexdigest()[:8]}"
+
+def ensure_dir(p: Path):
+    p.mkdir(parents=True, exist_ok=True)
+
 
 def pd_nodes(pd: dict) -> list:
     for path in [
@@ -43,6 +72,7 @@ def pd_nodes(pd: dict) -> list:
             return cur
     return []
 
+
 def pd_leaders(pd: dict) -> dict:
     for path in [
         ("enterprise_built", "setup", "setup_domains", "domain_leaders"),
@@ -60,11 +90,13 @@ def pd_leaders(pd: dict) -> dict:
             return cur
     return {}
 
+
 def rec_domain(rec) -> Optional[str]:
     if not isinstance(rec, dict):
         return None
     ed = rec.get("enterprise_description") or {}
     return ed.get("domain") or rec.get("domain") or ed.get("forest")
+
 
 def leader_pass(leaders: dict, dom: Optional[str]) -> Optional[str]:
     if not dom:
@@ -75,6 +107,7 @@ def leader_pass(leaders: dict, dom: Optional[str]) -> Optional[str]:
             return info[k]
     return None
 
+
 def os_hint_of(n: dict) -> str:
     for k in ("os", "os_type", "platform", "family"):
         v = n.get(k)
@@ -83,13 +116,17 @@ def os_hint_of(n: dict) -> str:
     name = n.get("name", "") or n.get("hostname", "")
     return "windows" if name.lower().startswith(("win", "dc", "iis", "rootca", "subca")) else "linux"
 
+
 _IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+
+
 def _extract_ipv4_from_value(v: Any) -> Optional[str]:
     if isinstance(v, str):
         m = _IP_RE.search(v)
         if m:
             return m.group(0)
     return None
+
 
 def ip_of(n: dict) -> Optional[str]:
     for k in (
@@ -130,52 +167,80 @@ def ip_of(n: dict) -> Optional[str]:
         else:
             return _extract_ipv4_from_value(obj)
         return None
+
     return scan(n)
 
-def ensure_dir(p: Path):
-    p.mkdir(parents=True, exist_ok=True)
 
-# ----------------------------- action parsing --------------------------------
-def parse_action_queue(argv: List[str]) -> List[Tuple[str, str]]:
+def _fp(secret) -> str:
+    if not secret:
+        return "len=0 sha256=--------"
+    import hashlib as _h
+    return f"len={len(str(secret))} sha256={_h.sha256(str(secret).encode()).hexdigest()[:8]}"
+
+
+# --------------------------- action parsing (NEW) ----------------------------
+def parse_workflow_token(token: str) -> Tuple[Optional[str], Optional[str], str]:
     """
-    Extract an ordered queue of ('workflow'|'impact', value) from argv.
-    Supports: --workflow X | -w X, --impact Y
-    Preserves the user's ordering exactly. Values are plain (no colon parsing).
+    Parse a single --workflow token in the format [[user@]host=]name.
+
+    Enhanced to handle usernames that contain '@' (e.g., pclark@castle@win10-fin=workflow1):
+    - We now split on the LAST '@' before '=', not the first.
+    Returns (user_or_None, host_or_None, name).
     """
-    actions: List[Tuple[str, str]] = []
+    token = token.strip()
+    if "=" not in token:
+        return (None, None, token)
+
+    lhs, name = token.split("=", 1)
+    lhs = lhs.strip()
+    name = name.strip()
+
+    # Split on the last '@' if present
+    if "@" in lhs:
+        user, host = lhs.rsplit("@", 1)
+        user = user.strip() or None
+        host = host.strip() or None
+    else:
+        user, host = (None, lhs or None)
+
+    return (user, host, name)
+
+
+def parse_action_queue(argv: List[str]) -> List[Tuple[str, Tuple[Optional[str], Optional[str], str]]]:
+    """
+    Extract an ordered queue of actions from argv with preserved ordering.
+    Supports:
+      --workflow [[user@]host=]name     (repeatable)
+      --impact   name                   (repeatable)
+    Returns: List of (kind, (user_or_None, host_or_None, name))
+    """
+    actions: List[Tuple[str, Tuple[Optional[str], Optional[str], str]]] = []
     i = 0
     while i < len(argv):
         tok = argv[i]
         if tok in ("--workflow", "-w"):
-            if i + 1 < len(argv):
-                actions.append(("workflow", argv[i + 1]))
-                i += 2
-                continue
+            if i + 1 >= len(argv):
+                raise SystemExit("--workflow requires an argument in the form [[user@]host=]name")
+            nxt = argv[i + 1]
+            actions.append(("workflow", parse_workflow_token(nxt)))
+            i += 2
+            continue
         if tok == "--impact":
-            if i + 1 < len(argv):
-                actions.append(("impact", argv[i + 1]))
-                i += 2
-                continue
+            if i + 1 >= len(argv):
+                raise SystemExit("--impact requires a name")
+            actions.append(("impact", (None, None, argv[i + 1])))
+            i += 2
+            continue
         i += 1
     return actions
 
-# ----------------------------- auth & per-OS helpers -------------------------
+
+# ----------------------------- auth & collectors -----------------------------
 def _auth_plan(n: dict, ent_by_name: dict, leaders: dict, verbose: bool):
     """
-    _auth_plan
-    ----------
     Build the auth plan for a node based on its OS and domain.
-
-    Parameters:
-        n: Node record dict.
-        ent_by_name: Enterprise nodes by name.
-        leaders: Domain leaders map.
-        verbose: If True, print chosen credentials (hashed).
-
-    Returns:
-        (name, host_ip, os_hint, user, password) tuple.
+    Returns (name, host_ip, os_hint, user, password)
     """
-
     name = n.get("name") or n.get("hostname") or "unknown"
     host_ip = ip_of(n)
     osl = os_hint_of(n)
@@ -194,32 +259,12 @@ def _auth_plan(n: dict, ent_by_name: dict, leaders: dict, verbose: bool):
             file=sys.stderr,
             flush=True,
         )
-        def _fp(secret):
-            if not secret:
-                return "len=0 sha256=--------"
-            import hashlib as _h
-            return f"len={len(str(secret))} sha256={_h.sha256(str(secret).encode()).hexdigest()[:8]}"
         print(f"[auth-plan] user={user} pw={_fp(pw_final)} leader_pw={_fp(pw_leader)}", file=sys.stderr, flush=True)
 
     return name, host_ip, osl, user, pw_final
 
 
 def _download(h, remote_path: str, local_path: Path, verbose: bool):
-    """
-    _download
-    ---------
-    Fetch a remote file to a local path using ShellHandler.get_file.
-
-    Parameters:
-        h: ShellHandler instance.
-        remote_path: Source path on the remote.
-        local_path: Local filesystem destination.
-        verbose: If True, pass verbose to get_file when supported.
-
-    Returns:
-        None.
-    """
-
     ensure_dir(local_path.parent)
     try:
         h.get_file(remote_path, str(local_path), verbose=verbose)
@@ -228,24 +273,10 @@ def _download(h, remote_path: str, local_path: Path, verbose: bool):
 
 
 def _collect_linux(remote_path: str, h, remote_verbose: bool) -> int:
-    """
-    _collect_linux
-    --------------
-    Create a tar.gz of key logs on a Linux host and place it at remote_path.
-
-    Parameters:
-        remote_path: Target tar.gz path on the remote.
-        h: ShellHandler instance.
-        remote_verbose: If True, pass verbose=True to execute_cmd.
-
-    Returns:
-        Exit code from the remote command.
-    """
-
     bash_script = r"""
 set -euo pipefail
 shopt -s globstar nullglob
-tmpdir="$(mktemp -d /tmp/baselinelogs.XXXXXX)"
+tmpdir="$(mktemp -d /tmp/logs.XXXXXX)"
 cp -f /etc/hostname "$tmpdir/" 2>/dev/null || true
 cp -f /etc/*release "$tmpdir/" 2>/dev/null || true
 tar -C / -czf "{remote}" \
@@ -266,26 +297,11 @@ fi
 
 
 def _collect_windows(remote_zip: str, name: str, h, remote_verbose: bool) -> int:
-    """
-    _collect_windows
-    ----------------
-    Export EVTX logs and useful directories on a Windows host and compress to remote_zip.
-
-    Parameters:
-        remote_zip: Destination zip path on the remote.
-        name: Node name (used for filenames).
-        h: ShellHandler instance.
-        remote_verbose: If True, pass verbose=True to execute_powershell_multiline.
-
-    Returns:
-        Exit code from PowerShell execution.
-    """
-
-    ps_script = """
+    ps_script = f"""
 $ErrorActionPreference = "Continue"
 $DestRoot = 'C:\\tmp'
 $ZipPath  = '{remote_zip}'
-$Stage    = Join-Path $DestRoot ('baselinelogs-{name}')
+$Stage    = Join-Path $DestRoot ('logs-{name}')
 
 if (Test-Path -LiteralPath $Stage) {{ Remove-Item -LiteralPath $Stage -Recurse -Force -ErrorAction SilentlyContinue }}
 New-Item -ItemType Directory -Force -Path $DestRoot,$Stage | Out-Null
@@ -318,14 +334,13 @@ foreach ($p in $CopyPaths) {{
 }}
 
 Compress-Archive -Path (Join-Path $Stage '*') -DestinationPath $ZipPath -Force -CompressionLevel Optimal
-""".format(remote_zip=remote_zip, name=name)
-
+"""
     code, out, err = h.execute_powershell_multiline(ps_script, filename=f"baseline.collect.{name}.ps1", verbose=remote_verbose)
     if remote_verbose:
         print(f"[auth-used] method=execute_powershell_multiline code={code}", file=sys.stderr, flush=True)
     return code
 
-# ----------------------------- unified collectors ----------------------------
+
 def _node_collect(
     n: dict,
     ent_by_name: dict,
@@ -336,30 +351,6 @@ def _node_collect(
     idxnum: int,
     is_baseline: bool,
 ):
-    """
-    _node_collect
-    -------------
-    Worker that collects logs from a single node.
-
-    Parameters:
-        n: Node record dict.
-        ent_by_name: Enterprise nodes by name.
-        leaders: Domain leader credentials map.
-        dst_dir: Destination directory for output.
-        local_verbose: Print local log lines if True.
-        remote_verbose: Pass verbose=True to ShellHandler exec if True.
-        idxnum: Snapshot index (0 baseline).
-        is_baseline: True for baseline collection.
-
-    Returns:
-        (name, success, message) tuple for diagnostics.
-    """
-
-    """
-    Per-node worker used by both baseline and post-action snapshots.
-    idxnum: 0 for baseline; 1..N for after-action snapshots
-    is_baseline: True for baseline; False for after-action
-    """
     name, host_ip, osl, user, pw_final = _auth_plan(n, ent_by_name, leaders, local_verbose)
 
     if not host_ip:
@@ -372,20 +363,14 @@ def _node_collect(
         h = shell_handler.ShellHandler(host_ip, user, pw_final)  # type: ignore
 
         if osl.startswith("ubuntu") or osl == "linux":
-            remote_tgz = f"/tmp/baselinelogs-{name}.tar.gz"
+            remote_tgz = f"/tmp/logs-{name}.tar.gz"
             _collect_linux(remote_tgz, h, remote_verbose)
-            if is_baseline:
-                local_path = dst_dir / f"{name}.baselinelogs.tar.gz"
-            else:
-                local_path = dst_dir / f"{name}.after{idxnum:02d}.baselinelogs.tar.gz"
+            local_path = dst_dir / (f"{name}.logs.tar.gz" if is_baseline else f"{name}.after{idxnum:02d}.logs.tar.gz")
             _download(h, remote_tgz, local_path, remote_verbose)
         else:
-            fixed_remote_zip = fr"C:\tmp\baselinelogs-{name}.zip"
+            fixed_remote_zip = fr"C:\tmp\logs-{name}.zip"
             _collect_windows(fixed_remote_zip, name, h, remote_verbose)
-            if is_baseline:
-                local_path = dst_dir / f"{name}.baselinelogs.zip"
-            else:
-                local_path = dst_dir / f"{name}.after{idxnum:02d}.baselinelogs.zip"
+            local_path = dst_dir / (f"{name}.logs.zip" if is_baseline else f"{name}.after{idxnum:02d}.logs.zip")
             _download(h, fixed_remote_zip, local_path, remote_verbose)
 
         if local_verbose:
@@ -410,53 +395,22 @@ def collect_logs_parallel(
     idxnum: int,
     is_baseline: bool,
 ):
-    """
-    collect_logs_parallel
-    ---------------------
-    Run a parallel log collection across all nodes for either baseline (idx 0)
-    or after-action snapshots (idx >= 1).
-
-    Parameters:
-        nodes: List of node dicts to collect from.
-        ent_by_name: Node lookup from enterprise.json by name.
-        leaders: Domain leader credentials map.
-        outdir: Output directory root.
-        local_verbose: If True, print local progress/debug lines.
-        remote_verbose: If True, pass verbose=True to ShellHandler methods.
-        args_max_workers: 0 for per-node parallel; otherwise explicit cap.
-        step_dirname: Steps/<dirname> destination.
-        label: Human-readable label for logging.
-        idxnum: 0 for baseline; 1..N for after-action snapshots.
-        is_baseline: True if this is the baseline phase.
-
-    Returns:
-        None. Writes artifacts under outdir/steps/.
-    """
-
-    """
-    Unified parallel collector for both baseline and after-action phases.
-    - step_dirname: directory under steps/ to place outputs
-    - label: human-readable label for BEGIN/END lines
-    - idxnum: 0 for baseline; 1..N for after-action steps
-    - is_baseline: True for baseline phase
-    """
     t0 = time.time()
     tag = f"{idxnum:02d}" if not is_baseline else "00"
     print(f"[{tag}] BEGIN LOGS {label}", flush=True)
     dst_dir = outdir / "steps" / step_dirname
     ensure_dir(dst_dir)
 
-    # Write metadata alongside the logs for this step if available
     try:
-        from json import dumps as _jdumps
         if GLOBAL_META_FOR_STEPS is not None:
-            (dst_dir / "enterprise.meta.json").write_text(_jdumps(GLOBAL_META_FOR_STEPS, indent=2), encoding="utf-8")
+            (dst_dir / "enterprise.meta.json").write_text(json.dumps(GLOBAL_META_FOR_STEPS, indent=2), encoding="utf-8")
     except Exception as _e:
         print(f"[warn] failed to write step metadata: {type(_e).__name__}: {_e}", flush=True)
 
     max_workers = (args_max_workers if args_max_workers > 0 else max(1, len(nodes)))
     futures = []
     from concurrent.futures import ThreadPoolExecutor, as_completed
+
     with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"collect-{tag}") as ex:
         for n in nodes:
             futures.append(ex.submit(_node_collect, n, ent_by_name, leaders, dst_dir, local_verbose, remote_verbose, idxnum, is_baseline))
@@ -466,109 +420,52 @@ def collect_logs_parallel(
 
     dt = time.time() - t0
     print(f"[{tag}] END   LOGS {label} ({dt:.1f}s)", flush=True)
-def collect_action_logs(nodes: list, ent_by_name: dict, leaders: dict, outdir: Path, verbose: bool, step_dirname: str, label: str, idxnum: int):
-    # Collect logs exactly like baseline, but into a unique step dir + filenames
-    print(f"[{idxnum:02d}] BEGIN LOGS {label}", flush=True)
-    dst_dir = outdir / "steps" / step_dirname
-    ensure_dir(dst_dir)
-    for n in nodes:
-        name = n.get("name") or n.get("hostname") or "unknown"
-        host_ip = ip_of(n)
-        osl = os_hint_of(n)
 
-        raw_dom = rec_domain(n)
-        ent_dom = rec_domain(ent_by_name.get(name)) if name in ent_by_name else None
-        chosen = raw_dom or ent_dom
 
-        user = "ubuntu" if (osl.startswith("ubuntu") or osl == "linux") else (f"{chosen}\\Administrator" if chosen else "Administrator")
-        pw_leader = leader_pass(leaders, chosen)
-        pw_final = pw_leader or n.get("password")
-
-        if not host_ip:
-            print(f"[collect-error] node={name} missing control IP; skipping.", file=sys.stderr, flush=True)
-            continue
-
-        try:
-            import shell_handler  # your repo module
-            h = shell_handler.ShellHandler(host_ip, user, pw_final)  # type: ignore
-
-            if osl.startswith("ubuntu") or osl == "linux":
-                remote_tgz = f"/tmp/baselinelogs-{name}.tar.gz"
-                bash_script = r"""
-set -euo pipefail
-shopt -s globstar nullglob
-tmpdir="$(mktemp -d /tmp/baselinelogs.XXXXXX)"
-cp -f /etc/hostname "$tmpdir/" 2>/dev/null || true
-cp -f /etc/*release "$tmpdir/" 2>/dev/null || true
-tar -C / -czf "{remote}" \
-  --warning=no-file-changed \
-  --exclude="**/*.gz" --exclude="**/*.xz" --exclude="**/*.zst" \
-  --exclude="**/apt/**" --exclude="**/private/**" \
-  --exclude="**/btmp*" --exclude="**/wtmp*" --exclude="**/lastlog" \
-  var/log etc/hostname etc/*release var/lib/systemd/coredump var/log/journal 2>/dev/null || true
-if [ ! -s "{remote}" ]; then
-  tar -C "$tmpdir" -czf "{remote}" .
-fi
-""".strip("\n").format(remote=remote_tgz)
-                safe = bash_script.replace("'", "'\"'\"'")
-                h.execute_cmd(f"bash -lc '{safe}'", verbose=verbose)
-                local_path = dst_dir / f"{name}.after{idxnum:02d}.baselinelogs.tar.gz"
-                try:
-                    h.get_file(remote_tgz, str(local_path), verbose=verbose)
-                except TypeError:
-                    h.get_file(remote_tgz, str(local_path))
-            else:
-                fixed_remote_zip = fr"C:\tmp\baselinelogs-{name}.zip"
-                ps_script = fr"""
-$ErrorActionPreference = "Continue"
-$DestRoot = 'C:\tmp'
-$ZipPath  = '{fixed_remote_zip}'
-$Stage    = Join-Path $DestRoot ('baselinelogs-{name}')
-
-if (Test-Path -LiteralPath $Stage) {{ Remove-Item -LiteralPath $Stage -Recurse -Force -ErrorAction SilentlyContinue }}
-New-Item -ItemType Directory -Force -Path $DestRoot,$Stage | Out-Null
-if (Test-Path -LiteralPath $ZipPath) {{ Remove-Item -LiteralPath $ZipPath -Force -ErrorAction SilentlyContinue }}
-
-$EvtxDir = Join-Path $Stage 'evtx'
-New-Item -ItemType Directory -Force -Path $EvtxDir | Out-Null
-Get-WinEvent -ListLog * | ForEach-Object {{ try {{ $san = $_.LogName -replace '[\\/:*?""<>|]', '_' ; $out = Join-Path $EvtxDir ($san + '.evtx') ; wevtutil epl \"$( $_.LogName )\" \"$out\" }} catch {{ }} }}
-$CopyPaths = @('C:\Windows\System32\LogFiles','C:\inetpub\logs\LogFiles','C:\ProgramData\Microsoft\Windows\WER','C:\ProgramData\Microsoft\Crypto\RSA\MachineKeys')
-foreach ($p in $CopyPaths) {{ if (Test-Path -LiteralPath $p) {{ $leaf = Split-Path $p -Leaf ; $target = Join-Path $Stage $leaf ; $null = robocopy $p $target /E /R:0 /W:0 /NFL /NDL /NP /XJ /XF *.evtx }} }}
-
-Compress-Archive -Path (Join-Path $Stage '*') -DestinationPath $ZipPath -Force -CompressionLevel Optimal
-""".lstrip("\n")
-                h.execute_powershell_multiline(ps_script, filename=f"after{idxnum:02d}.collect.{name}.ps1", verbose=remote_verbose)
-                local_path = dst_dir / f"{name}.after{idxnum:02d}.baselinelogs.zip"
-                try:
-                    h.get_file(fixed_remote_zip, str(local_path), verbose=verbose)
-                except TypeError:
-                    h.get_file(fixed_remote_zip, str(local_path))
-        except Exception as e:
-            print(f"[collect-error] node={name} ip={host_ip} {type(e).__name__}: {e}", file=sys.stderr, flush=True)
-
-    print(f"[{idxnum:02d}] END   LOGS {label} (0.0s)", flush=True)
-
-# ------------------------------- main ---------------------------------------
-def main():
+# ----------------------------------- main ------------------------------------
+def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("-p", "--post-deploy", dest="post_deploy", required=True)
     ap.add_argument("--enterprise-json", dest="enterprise_json", required=False)
-    ap.add_argument("-w", "--workflow", dest="workflow", action="append",
-                    help="Queue a workflow in order: --workflow NAME (repeatable)")
-    ap.add_argument("--impact", dest="impact", action="append",
-                    help="Queue an impact in order: --impact NAME (repeatable)")
+    ap.add_argument(
+        "-w",
+        "--workflow",
+        dest="workflow",
+        action="append",
+        help="Queue a workflow in order: --workflow [[user@]host=]name (repeatable)",
+    )
+    ap.add_argument(
+        "--logins",
+        dest="logins",
+        default=None,
+        help="Path to logins.json (REQUIRED if any --workflow is provided)",
+    )
+    ap.add_argument("--impact", dest="impact", action="append", help="Queue an impact in order: --impact NAME (repeatable)")
     ap.add_argument("-o", "--output", dest="output", default="out")
-    ap.add_argument("-v", "--verbose", dest="verbose", action="count", default=0,
-                    help="-v for local logs; -vv (or more) also enables remote ShellHandler verbosity")
-    ap.add_argument("--max-workers", type=int, default=0,
-                    help="0 = per-node parallelism (one thread per node). Otherwise set an explicit cap.")
+    ap.add_argument(
+        "-v",
+        "--verbose",
+        dest="verbose",
+        action="count",
+        default=0,
+        help="-v for local logs; -vv (or more) also enables remote ShellHandler verbosity",
+    )
+    ap.add_argument(
+        "--max-workers",
+        type=int,
+        default=0,
+        help="0 = per-node parallelism (one thread per node). Otherwise set an explicit cap.",
+    )
     args, _ = ap.parse_known_args()
 
-    # Load meta
+    # Load base JSON
     pd = load_json(args.post_deploy)
     ent = load_json(args.enterprise_json) if args.enterprise_json else {}
     nodes = pd_nodes(pd)
     leaders = pd_leaders(pd)
+
+    if not nodes:
+        raise SystemExit("No nodes found in post-deploy JSON.")
 
     by_name = {(n.get("name") or n.get("hostname")): n for n in nodes if isinstance(n, dict)}
     ent_by_name = {(n.get("name") or n.get("hostname")): n for n in (ent.get("nodes") or []) if isinstance(n, dict)}
@@ -588,55 +485,198 @@ def main():
     }
     (outdir / "enterprise.meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
-    # expose meta to collectors without altering function signatures
     global GLOBAL_META_FOR_STEPS
     GLOBAL_META_FOR_STEPS = meta
 
-    # Build ordered action queue from argv to preserve interleaving (ONLY from sys.argv for order)
+    # Build ordered action queue (from argv to preserve order)
     argv_actions = parse_action_queue(sys.argv[1:])
 
-    # Always run baseline first
-    collect_logs_parallel(nodes, ent_by_name, leaders, outdir,
-                      local_verbose, remote_verbose, args.max_workers,
-                      step_dirname='baseline', label='baseline', idxnum=0, is_baseline=True)
+    # ---------------- Early sanity checks for workflows ----------------
+    workflow_actions = [(k, v) for (k, v) in argv_actions if k == "workflow"]
 
-    # Run 0..N actions in given order, collecting logs after each
+    # -------- Preflight visibility for supplied settings (before baseline) --------
+    for _, (user_opt, host_opt, wname) in workflow_actions:
+        user_desc = f"supplied:{user_opt}" if user_opt else "not-supplied"
+        host_desc = f"supplied:{host_opt}" if host_opt else "not-supplied"
+        print(f"[preflight] workflow={wname} user={user_desc} host={host_desc}", flush=True)
+
+    if workflow_actions:
+        if not args.logins:
+            raise SystemExit("--logins must be provided whenever --workflow is used.")
+        if not Path(args.logins).exists():
+            raise SystemExit(f"--logins file not found: {args.logins}")
+        logins_doc = load_json(args.logins)
+        all_users = logins_doc.get("users") or []
+        if not isinstance(all_users, list) or not all_users:
+            raise SystemExit(f"--logins has no users: {args.logins}")
+
+        # Validate each workflow's specified user/host if provided
+        for _, (user_opt, host_opt, wname) in workflow_actions:
+            if user_opt:
+                found = any((u.get("user_profile", {}) or {}).get("username") == user_opt for u in all_users)
+                if not found:
+                    raise SystemExit(f"User '{user_opt}' not found in {args.logins} for workflow '{wname}'.")
+            if host_opt:
+                if host_opt not in by_name:
+                    raise SystemExit(f"Host '{host_opt}' not found in post-deploy for workflow '{wname}'.")
+                if user_opt:
+                    found = any((u.get("user_profile", {}) or {}).get("username") == user_opt for u in all_users)
+                    if not found:
+                        raise SystemExit(f"User '{user_opt}' not found in {args.logins} for workflow '{wname}'.")
+                if host_opt:
+                    if host_opt not in by_name:
+                        raise SystemExit(f"Host '{host_opt}' not found in post-deploy for workflow '{wname}'.")
+    
+        # ---------------- Always run baseline first ----------------
+    collect_logs_parallel(
+        nodes,
+        ent_by_name,
+        leaders,
+        outdir,
+        local_verbose,
+        remote_verbose,
+        args.max_workers,
+        step_dirname="baseline",
+        label="baseline",
+        idxnum=0,
+        is_baseline=True,
+    )
+
+    # ---------------- Execute actions in order ----------------
+    # Preload users (if any workflows exist) to reuse
+    users_cache: List[dict] = []
+    if workflow_actions:
+        users_cache = (load_json(args.logins).get("users") or [])
+
     for idx, (kind, val) in enumerate(argv_actions, start=1):
         if kind == "workflow":
-            wname = val
+            user_opt, host_opt, wname = val
+
+            # Resolve host
+            if host_opt:
+                target_name = host_opt  # already validated above
+                host_sel = "specified"
+            else:
+                names = list(by_name.keys())
+                if not names:
+                    raise SystemExit("No hosts available to choose at random.")
+                target_name = random.choice(names)
+                host_sel = "random"
+
+            # Resolve user
+            if user_opt:
+                username = user_opt
+                user_sel = "specified"
+                chosen_user_doc = next((u for u in users_cache if (u.get("user_profile", {}) or {}).get("username") == username), {})
+            else:
+                # Prefer users that declare this workflow; else any
+                def _has_wf(u: dict) -> bool:
+                    prof = (u.get("login_profile") or {})
+                    return (wname in (prof.get("workflows") or []))
+                candidates = [u for u in users_cache if _has_wf(u)] or users_cache
+                chosen_user_doc = random.choice(candidates)
+                username = chosen_user_doc.get("user_profile", {}).get("username")
+                if not username:
+                    raise SystemExit("Randomly selected user lacks user_profile.username in --logins.")
+                user_sel = "random"
+
+            # Make selection visible in logs (always)
+            print(f"[{idx:02d}] emulate-login: workflow={wname} user={username} ({user_sel}) host={target_name} ({host_sel})", flush=True)
+
+            # Prepare step dir and metadata
+            step_dirname = f"after-{idx:02d}-workflow-{wname}"
+            step_dir = outdir / "steps" / step_dirname
+            ensure_dir(step_dir)
+            logfile = str(step_dir / f"workflow.run{idx:02d}.ndjson")
+
+            wf_meta = {
+                "workflow": wname,
+                "index": idx,
+                "requested_user": user_opt,
+                "requested_host": host_opt,
+                "selected_user": username,
+                "selected_host": target_name,
+                "user_selection": user_sel,
+                "host_selection": host_sel,
+                "logins_path": args.logins,
+                "seed": (int(time.time()) & 0xFFFFFFFF),
+                "ts": datetime.now().isoformat(timespec="seconds"),
+            }
+            (step_dir / "workflow.meta.json").write_text(json.dumps(wf_meta, indent=2), encoding="utf-8")
+
             print(f"[{idx:02d}] BEGIN WORKFLOW {wname}", flush=True)
-            if local_verbose:
-                print(f"[workflow] running '{wname}' (stub) -> steps/workflow-{wname}-run{idx:02d}", file=sys.stderr, flush=True)
-            step_dir = outdir / "steps" / f"workflow-{wname}-run{idx:02d}"
-            step_dir.mkdir(parents=True, exist_ok=True)
-            (step_dir / f"workflow.run{idx:02d}.json").write_text(
-                json.dumps({"result": "stubbed", "workflow": wname, "index": idx}, indent=2),
-                encoding="utf-8",
+
+            # Build one login record
+            login_length = 1
+            login_start_dt = datetime.now()
+            login_end_dt = login_start_dt + timedelta(seconds=login_length)
+
+            login = {
+                "user": username,
+                "from": {"ip": "10.255.255.250"},
+                "to": {"node": target_name},
+                "login_start": login_start_dt.strftime("%Y-%m-%d %H:%M:%S.%f"),
+                "login_end": login_end_dt.strftime("%Y-%m-%d %H:%M:%S.%f"),
+                "login_length": login_length,
+                "workflows": [wname],
+                "selection": {"user": user_sel, "host": host_sel},
+            }
+
+            # Run emulated login (seed from wf_meta to also persist it)
+            emulate_logins.emulate_login(
+                number=1,
+                login=login,
+                user_data=users_cache,
+                built=pd.get("enterprise_built", {}),
+                seed=wf_meta["seed"],
+                logfile=logfile,
+                workflows_override=[wname],
             )
-            print(f"[{idx:02d}] END   WORKFLOW {wname} (0.1s)", flush=True)
-            collect_logs_parallel(nodes, ent_by_name, leaders, outdir,
-                      local_verbose, remote_verbose, args.max_workers,
-                      step_dirname=f"after-{idx:02d}-workflow-{wname}",
-                      label=f"after workflow {wname}", idxnum=idx, is_baseline=False)
+
+            print(f"[{idx:02d}] END   WORKFLOW {wname}", flush=True)
+
+            # Collect after logs
+            collect_logs_parallel(
+                nodes,
+                ent_by_name,
+                leaders,
+                outdir,
+                local_verbose,
+                remote_verbose,
+                args.max_workers,
+                step_dirname=step_dirname,
+                label=f"after workflow {wname}",
+                idxnum=idx,
+                is_baseline=False,
+            )
+
         elif kind == "impact":
-            iname = val
+            _, _, iname = val
             print(f"[{idx:02d}] BEGIN IMPACT {iname}", flush=True)
-            if local_verbose:
-                print(f"[impact] applying '{iname}' (stub) -> steps/impact-{iname}-run{idx:02d}", file=sys.stderr, flush=True)
             step_dir = outdir / "steps" / f"impact-{iname}-run{idx:02d}"
-            step_dir.mkdir(parents=True, exist_ok=True)
+            ensure_dir(step_dir)
             (step_dir / f"impact.run{idx:02d}.json").write_text(
                 json.dumps({"result": "stubbed", "impact": iname, "index": idx}, indent=2),
                 encoding="utf-8",
             )
             print(f"[{idx:02d}] END   IMPACT {iname} (0.1s)", flush=True)
-            collect_logs_parallel(nodes, ent_by_name, leaders, outdir,
-                      local_verbose, remote_verbose, args.max_workers,
-                      step_dirname=f"after-{idx:02d}-impact-{iname}",
-                      label=f"after impact {iname}", idxnum=idx, is_baseline=False)
+            collect_logs_parallel(
+                nodes,
+                ent_by_name,
+                leaders,
+                outdir,
+                local_verbose,
+                remote_verbose,
+                args.max_workers,
+                step_dirname=f"after-{idx:02d}-impact-{iname}",
+                label=f"after impact {iname}",
+                idxnum=idx,
+                is_baseline=False,
+            )
 
     print("All steps complete.", flush=True)
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

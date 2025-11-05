@@ -12,3 +12,4 @@ python_novaclient
 flake8
 autopep8
 pandas
+python-evtx
