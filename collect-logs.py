@@ -20,7 +20,6 @@ Updates (2025-11-04, v2):
 
 import argparse
 import json
-import os
 import random
 import re
 import sys
@@ -42,6 +41,17 @@ emu_spec.loader.exec_module(emulate_logins)
 GLOBAL_META_FOR_STEPS: Dict[str, Any] | None = None
 
 # --------------------------------- helpers -----------------------------------
+"""
+Function: load_json
+Inputs:
+    (see function signature)
+Returns:
+    (see description)
+Description:
+    Load a JSON file into a dict with error handling.
+"""
+
+
 def load_json(p: str) -> dict:
     try:
         return json.loads(Path(p).read_text(encoding="utf-8"))
@@ -50,8 +60,30 @@ def load_json(p: str) -> dict:
         return {}
 
 
+"""
+Function: ensure_dir
+Inputs:
+    (see function signature)
+Returns:
+    (see description)
+Description:
+    Create directory path recursively if missing.
+"""
+
+
 def ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
+
+
+"""
+Function: pd_nodes
+Inputs:
+    (see function signature)
+Returns:
+    (see description)
+Description:
+    Extract nodes list from post-deploy JSON across known layouts.
+"""
 
 
 def pd_nodes(pd: dict) -> list:
@@ -73,6 +105,17 @@ def pd_nodes(pd: dict) -> list:
     return []
 
 
+"""
+Function: pd_leaders
+Inputs:
+    (see function signature)
+Returns:
+    (see description)
+Description:
+    Extract domain leaders mapping from enterprise JSON across known layouts.
+"""
+
+
 def pd_leaders(pd: dict) -> dict:
     for path in [
         ("enterprise_built", "setup", "setup_domains", "domain_leaders"),
@@ -91,11 +134,33 @@ def pd_leaders(pd: dict) -> dict:
     return {}
 
 
+"""
+Function: rec_domain
+Inputs:
+    (see function signature)
+Returns:
+    (see description)
+Description:
+    Extract domain/forest string from a node record.
+"""
+
+
 def rec_domain(rec) -> Optional[str]:
     if not isinstance(rec, dict):
         return None
     ed = rec.get("enterprise_description") or {}
     return ed.get("domain") or rec.get("domain") or ed.get("forest")
+
+
+"""
+Function: leader_pass
+Inputs:
+    (see function signature)
+Returns:
+    (see description)
+Description:
+    Find administrator/leader password from leaders mapping for a domain.
+"""
 
 
 def leader_pass(leaders: dict, dom: Optional[str]) -> Optional[str]:
@@ -106,6 +171,17 @@ def leader_pass(leaders: dict, dom: Optional[str]) -> Optional[str]:
         if info.get(k):
             return info[k]
     return None
+
+
+"""
+Function: os_hint_of
+Inputs:
+    (see function signature)
+Returns:
+    (see description)
+Description:
+    Infer the OS type string from node metadata.
+"""
 
 
 def os_hint_of(n: dict) -> str:
@@ -120,12 +196,34 @@ def os_hint_of(n: dict) -> str:
 _IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
 
+"""
+Function: _extract_ipv4_from_value
+Inputs:
+    (see function signature)
+Returns:
+    (see description)
+Description:
+    Extract an IPv4 address from a string.
+"""
+
+
 def _extract_ipv4_from_value(v: Any) -> Optional[str]:
     if isinstance(v, str):
         m = _IP_RE.search(v)
         if m:
             return m.group(0)
     return None
+
+
+"""
+Function: ip_of
+Inputs:
+    (see function signature)
+Returns:
+    (see description)
+Description:
+    Attempt to locate a node's IP by scanning common keys and nested structures.
+"""
 
 
 def ip_of(n: dict) -> Optional[str]:
@@ -153,6 +251,7 @@ def ip_of(n: dict) -> Optional[str]:
                 if ip:
                     return ip
     # recursive scan
+
     def scan(obj):
         if isinstance(obj, dict):
             for vv in obj.values():
@@ -171,6 +270,17 @@ def ip_of(n: dict) -> Optional[str]:
     return scan(n)
 
 
+"""
+Function: _fp
+Inputs:
+    (see function signature)
+Returns:
+    (see description)
+Description:
+    Fingerprint a secret for logging without revealing it.
+"""
+
+
 def _fp(secret) -> str:
     if not secret:
         return "len=0 sha256=--------"
@@ -179,6 +289,17 @@ def _fp(secret) -> str:
 
 
 # --------------------------- action parsing (NEW) ----------------------------
+"""
+Function: parse_workflow_token
+Inputs:
+    (see function signature)
+Returns:
+    (see description)
+Description:
+    Parse [[user@]host=]name tokens for workflows.
+"""
+
+
 def parse_workflow_token(token: str) -> Tuple[Optional[str], Optional[str], str]:
     """
     Parse a single --workflow token in the format [[user@]host=]name.
@@ -204,6 +325,17 @@ def parse_workflow_token(token: str) -> Tuple[Optional[str], Optional[str], str]
         user, host = (None, lhs or None)
 
     return (user, host, name)
+
+
+"""
+Function: parse_action_queue
+Inputs:
+    (see function signature)
+Returns:
+    (see description)
+Description:
+    Build ordered (kind, payload) tuples from argv for workflows and impacts.
+"""
 
 
 def parse_action_queue(argv: List[str]) -> List[Tuple[str, Tuple[Optional[str], Optional[str], str]]]:
@@ -236,6 +368,17 @@ def parse_action_queue(argv: List[str]) -> List[Tuple[str, Tuple[Optional[str], 
 
 
 # ----------------------------- auth & collectors -----------------------------
+"""
+Function: _auth_plan
+Inputs:
+    (see function signature)
+Returns:
+    (see description)
+Description:
+    Decide credentials to connect to a node based on OS and domain.
+"""
+
+
 def _auth_plan(n: dict, ent_by_name: dict, leaders: dict, verbose: bool):
     """
     Build the auth plan for a node based on its OS and domain.
@@ -255,13 +398,23 @@ def _auth_plan(n: dict, ent_by_name: dict, leaders: dict, verbose: bool):
 
     if verbose:
         print(
-            f"[auth-plan] node={name} host_ip={host_ip or 'MISSING'} os={osl} dom.raw={raw_dom} dom.ent={ent_dom} -> chosen={chosen}",
+            f"[auth-plan] node={name} host_ip={host_ip} user={user} pw={pw_final} leader_pw={pw_leader}",
             file=sys.stderr,
             flush=True,
         )
-        print(f"[auth-plan] user={user} pw={_fp(pw_final)} leader_pw={_fp(pw_leader)}", file=sys.stderr, flush=True)
 
     return name, host_ip, osl, user, pw_final
+
+
+"""
+Function: _download
+Inputs:
+    (see function signature)
+Returns:
+    (see description)
+Description:
+    Fetch a remote file to a local path via ShellHandler.
+"""
 
 
 def _download(h, remote_path: str, local_path: Path, verbose: bool):
@@ -270,6 +423,17 @@ def _download(h, remote_path: str, local_path: Path, verbose: bool):
         h.get_file(remote_path, str(local_path), verbose=verbose)
     except TypeError:
         h.get_file(remote_path, str(local_path))
+
+
+"""
+Function: _collect_linux
+Inputs:
+    (see function signature)
+Returns:
+    (see description)
+Description:
+    Collect Linux logs and system metadata into a remote tar.gz.
+"""
 
 
 def _collect_linux(remote_path: str, h, remote_verbose: bool) -> int:
@@ -296,29 +460,63 @@ fi
     return code
 
 
+"""
+Function: _collect_windows
+Inputs:
+    (see function signature)
+Returns:
+    (see description)
+Description:
+    Collect Windows EVTX snapshots and XML, copy selected trees, then zip.
+"""
+
+
 def _collect_windows(remote_zip: str, name: str, h, remote_verbose: bool) -> int:
+    """
+    Function: _collect_windows
+    Inputs:
+        - remote_zip: Destination path for the archive on the remote Windows host (e.g., C:\tmp\logs-<node>.zip)
+        - name: Node name used for staging directory naming
+        - h: ShellHandler instance for remote execution and transfers
+        - remote_verbose: Whether to enable verbose output from ShellHandler
+    Returns:
+        - int: PowerShell exit code from the remote execution
+    """
     ps_script = f"""
 $ErrorActionPreference = "Continue"
+
 $DestRoot = 'C:\\tmp'
 $ZipPath  = '{remote_zip}'
 $Stage    = Join-Path $DestRoot ('logs-{name}')
 
+# Reset stage and zip target
 if (Test-Path -LiteralPath $Stage) {{ Remove-Item -LiteralPath $Stage -Recurse -Force -ErrorAction SilentlyContinue }}
 New-Item -ItemType Directory -Force -Path $DestRoot,$Stage | Out-Null
 if (Test-Path -LiteralPath $ZipPath) {{ Remove-Item -LiteralPath $ZipPath -Force -ErrorAction SilentlyContinue }}
 
+# EVTX export directory
 $EvtxDir = Join-Path $Stage 'evtx'
 New-Item -ItemType Directory -Force -Path $EvtxDir | Out-Null
+
+# Export each channel with a sanitized filename (EVTX only; no XML)
 Get-WinEvent -ListLog * | ForEach-Object {{
+    $chan = $_.LogName
+
+    # Replace illegal filename characters (including slash/backslash) and collapse whitespace
+    $san = $chan -replace '[\/:*?""<>|]', '_'
+    $san = $san -replace '\s+', '_'
+
+    $evtxPath = Join-Path $EvtxDir ($san + '.evtx')
+
     try {{
-        $san = $_.LogName -replace '[\\/:*?""<>|]', '_'
-        $out = Join-Path $EvtxDir ($san + '.evtx')
-        wevtutil epl "$($_.LogName)" "$out" /ow:true
+        # Clean point-in-time EVTX snapshot via Event Log API
+        wevtutil epl "$chan" "$evtxPath" /ow:true
     }} catch {{
-        Write-Warning ("EVTX export failed: {{0}}: {{1}}" -f $_.LogName, $_.Exception.Message)
+        Write-Warning ("EVTX export failed: {0}: {1}" -f $chan, $_.Exception.Message)
     }}
 }}
 
+# Copy additional trees (avoid live *.evtx/*.xml; we already exported snapshots and skip prior-run XML)
 $CopyPaths = @(
   'C:\\Windows\\System32\\LogFiles',
   'C:\\inetpub\\logs\\LogFiles',
@@ -329,16 +527,28 @@ foreach ($p in $CopyPaths) {{
     if (Test-Path -LiteralPath $p) {{
         $leaf = Split-Path $p -Leaf
         $target = Join-Path $Stage $leaf
-        $null = robocopy $p $target /E /R:0 /W:0 /NFL /NDL /NP /XJ /XF *.evtx
+        $null = robocopy $p $target /E /R:0 /W:0 /NFL /NDL /NP /XJ /XF *.evtx *.xml
     }}
 }}
 
+# Zip it up (stage contains only curated content)
 Compress-Archive -Path (Join-Path $Stage '*') -DestinationPath $ZipPath -Force -CompressionLevel Optimal
 """
     code, out, err = h.execute_powershell_multiline(ps_script, filename=f"baseline.collect.{name}.ps1", verbose=remote_verbose)
     if remote_verbose:
         print(f"[auth-used] method=execute_powershell_multiline code={code}", file=sys.stderr, flush=True)
     return code
+
+
+"""
+Function: _node_collect
+Inputs:
+    (see function signature)
+Returns:
+    (see description)
+Description:
+    Collect logs for one node and download the resulting archive locally.
+"""
 
 
 def _node_collect(
@@ -382,6 +592,17 @@ def _node_collect(
         return name, False, msg
 
 
+"""
+Function: collect_logs_parallel
+Inputs:
+    (see function signature)
+Returns:
+    (see description)
+Description:
+    Run per-node collections in parallel and write step metadata.
+"""
+
+
 def collect_logs_parallel(
     nodes: list,
     ent_by_name: dict,
@@ -423,6 +644,17 @@ def collect_logs_parallel(
 
 
 # ----------------------------------- main ------------------------------------
+"""
+Function: main
+Inputs:
+    (see function signature)
+Returns:
+    (see description)
+Description:
+    CLI entrypoint to run baseline and queued actions.
+"""
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("-p", "--post-deploy", dest="post_deploy", required=True)
@@ -526,7 +758,7 @@ def main() -> int:
                 if host_opt:
                     if host_opt not in by_name:
                         raise SystemExit(f"Host '{host_opt}' not found in post-deploy for workflow '{wname}'.")
-    
+
         # ---------------- Always run baseline first ----------------
     collect_logs_parallel(
         nodes,

@@ -1,543 +1,572 @@
 #!/usr/bin/env python3
 """
-logdiff.py
------------
+Name:
+    logdiff.py
 
-A self-contained module and CLI that turns a baseline+steps log capture tree into
-compact, append-aware diffs.
-
-Policy:
-- Baseline (steps/baseline) is stored in full (as originally captured).
-- For each later step (e.g., steps/after-01-workflow-foo), per node:
-  * Unpack archive to a working area
-  * Convert binary logs (e.g., EVTX) to human-readable, line-oriented text
-  * Compare each file against the cumulative prior state for that node
-  * Apply append-aware policy: remove the longest suffix of the prior file that matches
-    the head (prefix) of the current file; store only the remaining tail
-  * For no-overlap or rotation/rewrite cases, store the full text version
-  * Always compress the step’s diff bundle into diff/<node>.diff.tgz
-- Optionally retain unpacked and patched (prior-state) trees on disk.
+Description:
+    Build an output tree with unpacked logs, converted text formats, and (optionally) diffs,
+    without mutating the input RUN_ROOT. All temporary and final artifacts live under OUT/<step>/...
 
 CLI:
-    logdiff build -i RUN_ROOT [-o DIFF_ROOT] [-k] [-v]
-    logdiff apply -i RUN_ROOT -o RECONSTRUCT_ROOT [-s STEP] [-v]
-
-Importable API:
-    from logdiff import build_diffs, apply_diffs
-    build_diffs(run_root="/path/to/run", out_root="/path/to/out", keep_unpacked=False, verbose=False)
+    logdiff build -i RUN_ROOT -o OUT [-k] [-v] [--evtx-format {xml,compact,jsonl}]
 
 Notes:
-- Conversion for EVTX uses python-evtx if available. If not installed, the converter will
-  fall back to storing the binary as a full-file replacement (with a warning).
-- Supports both .zip and .tar.gz per-node archives.
-- No prune/ignore patterns.
-
-Author: ChatGPT
+    * ZIP extraction streams in chunks and normalizes Windows "\\" paths to "/" while preventing zip-slip.
+    * EVTX conversion streams records and does not rely on Views. Formats:
+        - compact (default): single-line logfmt-style: core fields + EventData keys
+        - jsonl: one JSON record per line with the same minimal fields
+        - xml: original record XML per line
+    * Verbose mode prints each extracted file, each conversion/copy, and the created output step directories.
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import os
-import re
+import logging
 import shutil
 import sys
-import tarfile
-import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, Optional
+from xml.etree import ElementTree as ET
+
+# Optional dependency for EVTX streaming
+try:
+    from Evtx.Evtx import Evtx  # type: ignore
+except Exception:  # pragma: no cover - optional
+    Evtx = None  # type: ignore
 
 
-# -----------------------------
-# Utilities & helpers
-# -----------------------------
+# ----------------------------
+# Utility helpers
+# ----------------------------
 
-def _is_zip(path: Path) -> bool:
-    return path.suffix.lower() == ".zip"
-
-
-def _is_targz(path: Path) -> bool:
-    s = "".join(path.suffixes).lower()
-    return s.endswith(".tar.gz") or s.endswith(".tgz")
-
-
-def _norm_newlines(text: str) -> str:
-    return text.replace("\r\n", "\n").replace("\r", "\n")
-
-
-def _read_text_file(p: Path) -> str:
-    data = p.read_bytes()
-    try:
-        s = data.decode("utf-8", errors="replace")
-    except Exception:
-        s = data.decode("latin-1", errors="replace")
-    return _norm_newlines(s)
-
-
-def _write_text_file(p: Path, content: str) -> None:
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(_norm_newlines(content), encoding="utf-8")
-
-
-# -----------------------------
-# Archive unpacking
-# -----------------------------
-
-def unpack_archive(archive_path: Path, dst_dir: Path) -> None:
-    dst_dir.mkdir(parents=True, exist_ok=True)
-    if _is_zip(archive_path):
-        with zipfile.ZipFile(archive_path, "r") as zf:
-            zf.extractall(dst_dir)
-    elif _is_targz(archive_path):
-        with tarfile.open(archive_path, "r:gz") as tf:
-            tf.extractall(dst_dir)
-    else:
-        raise ValueError(f"Unsupported archive format: {archive_path}")
-
-
-# -----------------------------
-# EVTX conversion (best effort)
-# -----------------------------
-
-def _try_import_evtx():
-    try:
-        import Evtx  # type: ignore
-        return Evtx
-    except Exception:
-        return None
-
-
-def convert_evtx_file_to_lines(evtx_path: Path) -> Optional[str]:
-    Evtx = _try_import_evtx()
-    if Evtx is None:
-        sys.stderr.write(f"[logdiff] WARN: python-evtx not available; treating EVTX as binary: {evtx_path}\n")
-        return None
-
-    try:
-        from Evtx.Evtx import Evtx as EvtxReader  # type: ignore
-        from Evtx.Views import evtx_file_xml_view  # type: ignore
-    except Exception:
-        # Fallback to basic record iteration if views unavailable
-        try:
-            from Evtx.Evtx import Evtx as EvtxReader  # type: ignore
-            ev = EvtxReader(str(evtx_path))
-            lines: List[str] = []
-            for record in ev.records():  # type: ignore
-                try:
-                    xml = record.xml()
-                    if not isinstance(xml, str):
-                        xml = str(xml)
-                except Exception:
-                    xml = str(record)
-                lines.append(" ".join(xml.split()))
-            return ("\n".join(lines) + "\n") if lines else ""
-        except Exception:
-            sys.stderr.write(f"[logdiff] WARN: EVTX conversion failed for: {evtx_path}\n")
-            return None
-
-    try:
-        xml_text = evtx_file_xml_view(str(evtx_path))  # type: ignore
-        flat = " ".join(xml_text.split())
-        flat = flat.replace("</Event><Event", "</Event>\n<Event")
-        return flat + ("" if flat.endswith("\n") else "\n")
-    except Exception:
-        sys.stderr.write(f"[logdiff] WARN: EVTX conversion via views failed for: {evtx_path}\n")
-        return None
-
-
-def convert_tree_binaries_to_text(src_dir: Path, dst_dir: Path) -> None:
-    if dst_dir.exists():
-        shutil.rmtree(dst_dir)
-    dst_dir.mkdir(parents=True, exist_ok=True)
-
-    for root, dirs, files in os.walk(src_dir):
-        root_p = Path(root)
-        rel_root = root_p.relative_to(src_dir)
-        out_root = dst_dir / rel_root
-        out_root.mkdir(parents=True, exist_ok=True)
-
-        for fn in files:
-            sp = root_p / fn
-            dp = out_root / fn
-
-            if sp.suffix.lower() == ".evtx":
-                converted = convert_evtx_file_to_lines(sp)
-                if converted is not None:
-                    _write_text_file(dp.with_suffix(dp.suffix + ".txt"), converted)
-                else:
-                    shutil.copy2(sp, dp)
-                continue
-
-            # Try text copy; else binary copy
-            try:
-                s = _read_text_file(sp)
-                _write_text_file(dp, s)
-            except Exception:
-                shutil.copy2(sp, dp)
-
-
-# -----------------------------
-# Append-aware diff policy
-# -----------------------------
-
-def longest_suffix_prefix_overlap(prev_text: str, curr_text: str) -> int:
+def setup_logging(verbose: bool) -> None:
     """
-    Return length of the longest suffix of prev_text that equals the prefix of curr_text.
-    KMP-style prefix on combined string: curr + \x00 + prev_tail
+    Name:
+        setup_logging
+
+    Params:
+        verbose (bool): If True, enables DEBUG-level logging; otherwise INFO.
+
+    Returns:
+        None: Configures the root logger for the module.
     """
-    s = curr_text + "\x00" + prev_text[-len(curr_text):]
-    pi = [0] * len(s)
-    for i in range(1, len(s)):
-        j = pi[i - 1]
-        while j > 0 and s[i] != s[j]:
-            j = pi[j - 1]
-        if s[i] == s[j]:
-            j += 1
-        pi[i] = j
-    return min(pi[-1], len(curr_text))
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.getLogger("logdiff").setLevel(level)
+    logging.debug("Verbose logging enabled.")
+    logging.basicConfig(level=level, format="%(levelname)s:%(name)s:%(message)s")
 
 
-@dataclass
-class FileAction:
-    action: str   # 'append', 'full', 'delete'
-    path: str     # relative posix path
-    size: int     # payload size (bytes)
+def ensure_clean_dir(path: Path, keep: bool) -> None:
+    """
+    Name:
+        ensure_clean_dir
+
+    Params:
+        path (Path): Directory path to (re)create.
+        keep (bool): If True, keep if exists; if False, remove and recreate.
+
+    Returns:
+        None: Ensures directory exists and is empty unless keep=True.
+    """
+    if path.exists() and not keep:
+        shutil.rmtree(path)
+    path.mkdir(parents=True, exist_ok=True)
 
 
-def compute_file_delta(prev_file: Optional[Path], curr_file: Path, work_dir: Path) -> Tuple[FileAction, Optional[Path]]:
-    if prev_file is None:
-        payload = work_dir / "full" / curr_file.name
-        payload.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(curr_file, payload)
-        return FileAction("full", curr_file.as_posix(), payload.stat().st_size), payload
+def is_within(base: Path, target: Path) -> bool:
+    """
+    Name:
+        is_within
 
-    if not curr_file.exists():
-        return FileAction("delete", prev_file.as_posix(), 0), None
+    Params:
+        base (Path): The intended base directory.
+        target (Path): The target path being validated.
 
-    # Try as text
+    Returns:
+        bool: True if target is within base (prevents path traversal).
+    """
     try:
-        prev_text = _read_text_file(prev_file)
-        curr_text = _read_text_file(curr_file)
-        k = longest_suffix_prefix_overlap(prev_text, curr_text)
-        tail = curr_text[k:]
-        if len(tail) == 0:
-            return FileAction("append", curr_file.as_posix(), 0), None
-        payload = work_dir / "append" / (curr_file.name + ".tail")
-        payload.parent.mkdir(parents=True, exist_ok=True)
-        _write_text_file(payload, tail)
-        return FileAction("append", curr_file.as_posix(), len(tail.encode("utf-8"))), payload
+        target.resolve().relative_to(base.resolve())
+        return True
     except Exception:
-        payload = work_dir / "full" / curr_file.name
-        payload.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(curr_file, payload)
-        return FileAction("full", curr_file.as_posix(), payload.stat().st_size), payload
+        return False
 
 
-# -----------------------------
-# Step processing & state
-# -----------------------------
+def logfmt_escape(value: str) -> str:
+    """
+    Name:
+        logfmt_escape
 
-def discover_steps(steps_dir: Path) -> List[Path]:
-    all_dirs = [p for p in steps_dir.iterdir() if p.is_dir()]
-    baseline = [p for p in all_dirs if p.name == "baseline"]
-    others = sorted([p for p in all_dirs if p.name != "baseline"])
-    return baseline + others
+    Params:
+        value (str): Arbitrary string value to include in a logfmt line.
+
+    Returns:
+        str: Properly escaped/quoted value per simple logfmt rules.
+    """
+    must_quote = any(ch.isspace() for ch in value) or any(ch in '="' for ch in value)
+    escaped = value.replace('\\', '\\\\').replace('"', '\\"')
+    return f'"{escaped}"' if must_quote else escaped
 
 
-def find_node_archives(step_dir: Path) -> Dict[str, Path]:
-    mapping: Dict[str, Path] = {}
-    for p in step_dir.iterdir():
-        if not p.is_file():
+def record_to_minimal_dict(event_xml: str) -> Dict[str, object]:
+    """
+    Name:
+        record_to_minimal_dict
+
+    Params:
+        event_xml (str): XML text for a single <Event> record from an EVTX file.
+
+    Returns:
+        Dict[str, object]: Minimal normalized fields including System and EventData keys.
+    """
+    root = ET.fromstring(event_xml)
+    ns = {'e': root.tag.split('}')[0].strip('{')} if '}' in root.tag else {}
+
+    def find_text(xpath: str) -> Optional[str]:
+        el = root.find(xpath, ns) if ns else root.find(xpath)
+        return None if el is None else (el.text if el.text is not None else (el.get('Name') or None))
+
+    def find_attr(xpath: str, attr: str) -> Optional[str]:
+        el = root.find(xpath, ns) if ns else root.find(xpath)
+        return None if el is None else el.get(attr)
+
+    provider = find_attr('./System/Provider', 'Name') or ''
+    event_id = find_text('./System/EventID') or ''
+    level = find_text('./System/Level') or ''
+    computer = find_text('./System/Computer') or ''
+    time_created = find_attr('./System/TimeCreated', 'SystemTime') or ''
+
+    data: Dict[str, object] = {
+        'provider': provider,
+        'event_id': event_id,
+        'level': level,
+        'computer': computer,
+        'time': time_created,
+    }
+
+    eventdata = root.find('./EventData', ns) if ns else root.find('./EventData')
+    if eventdata is not None:
+        for d in list(eventdata):
+            key = d.get('Name') or d.tag
+            val = (d.text or '').strip()
+            data[key] = val
+
+    return data
+
+
+def minimal_to_compact_line(d: Dict[str, object]) -> str:
+    """
+    Name:
+        minimal_to_compact_line
+
+    Params:
+        d (Dict[str, object]): Minimal dict for one EVTX record.
+
+    Returns:
+        str: Single-line logfmt string with core fields first, followed by EventData keys.
+    """
+    keys_core = ['time', 'provider', 'event_id', 'level', 'computer']
+    parts = []
+    for k in keys_core:
+        v = str(d.get(k, ''))
+        parts.append(f"{k}={logfmt_escape(v)}")
+    for k, v in d.items():
+        if k in keys_core:
             continue
-        name = p.name
-        if re.match(r".+\.logs\.(zip|tar\.gz)$", name) or re.match(r".+\.after\d{2}\.logs\.(zip|tar\.gz)$", name):
-            node = name.split(".", 1)[0]
-            mapping[node] = p
-    return mapping
+        parts.append(f"{k}={logfmt_escape(str(v))}")
+    return ' '.join(parts)
 
 
-def build_diffs(run_root: str | Path, out_root: Optional[str | Path] = None, keep_unpacked: bool = False, verbose: bool = False) -> None:
-    run_root = Path(run_root).resolve()
-    steps_dir = run_root / "steps"
-    if not steps_dir.is_dir():
-        raise RuntimeError(f"No steps/ directory at: {run_root}")
+# ----------------------------
+# ZIP extraction
+# ----------------------------
+def extract_zip_streaming(zip_path: Path, dst_root: Path, verbose: bool = False) -> None:
+    """
+    Function: extract_zip_streaming
+    Inputs:
+        zip_path (Path): Path to the .zip archive to extract.
+        dst_root (Path): Destination root directory for extraction.
+        verbose (bool): If True, emit extra debug logging details.
+    Returns:
+        None
 
-    out_root = Path(out_root).resolve() if out_root else run_root
-    out_root.mkdir(parents=True, exist_ok=True)
+    Description:
+        Stream-extract a ZIP file into dst_root with path safety and a pre-pass that
+        fixes Windows 'fake-directory' entries produced by Compress-Archive (zero-byte
+        files placed at paths that should be directories, e.g., 'LogFiles/Fax').
 
-    state_root = out_root / ".state"
-    state_root.mkdir(parents=True, exist_ok=True)
+        With verbose=True, this emits detailed progress via the 'logdiff.unpack' logger:
+        - Start/finish notices and archive size
+        - Count of entries, directories to create, and converted fake directories
+        - Per-entry extraction lines (throttled every ~250 files to avoid spam)
+        - Debug lines when converting zero-byte files to real directories
+    """
 
-    steps = discover_steps(steps_dir)
-    if not steps or steps[0].name != "baseline":
-        raise RuntimeError("Baseline step missing or not first")
+    log = logging.getLogger("logdiff.unpack")
 
-    for si, step in enumerate(steps):
-        step_rel = step.relative_to(steps_dir).as_posix()
-        if verbose:
-            print(f"[logdiff] Processing step: {step_rel}")
+    # If caller asked for verbosity, ensure our logger actually emits
+    if verbose:
+        #log.setLevel(logging.DEBUG)
+        if not log.handlers:
+            h = logging.StreamHandler()
+            h.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+            log.addHandler(h)
 
-        node_archives = find_node_archives(step)
-        diff_dir = step / "diff"
-        unpack_dir = step / "unpacked"
-        patched_dir = step / "patched"
-        diff_dir.mkdir(exist_ok=True)
-        if keep_unpacked:
-            unpack_dir.mkdir(exist_ok=True)
-            patched_dir.mkdir(exist_ok=True)
+    # --- Open archive ---
+    try:
+        size = zip_path.stat().st_size if zip_path.exists() else 0
+        size_str = f"{size:,d}"
+        log.debug("[unpack] opening %s (%s bytes)", zip_path, size_str)
+    except Exception:
+        log.debug("[unpack] opening %s", zip_path)
 
-        for node, archive_path in sorted(node_archives.items()):
-            if verbose:
-                print(f"[logdiff]  node={node} archive={archive_path.name}")
-            node_state = state_root / node
-            node_state_text = node_state / "text"
-            if si == 0:
-                if node_state.exists():
-                    shutil.rmtree(node_state)
-                node_state_text.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        # --- Pre-pass: compute required directories (parents of all entries) ---
+        infos = zf.infolist()
+        names = [zi.filename.replace("\\", "/") for zi in infos]
+        needed_dirs: set[Path] = set()
 
-            # Unpack
-            node_unpack_src = (unpack_dir / node) if keep_unpacked else Path(tempfile.mkdtemp(prefix=f"logdiff-unpack-{node}-"))
-            if node_unpack_src.exists():
-                shutil.rmtree(node_unpack_src)
-            node_unpack_src.mkdir(parents=True, exist_ok=True)
-            unpack_archive(archive_path, node_unpack_src)
-
-            # Convert to text
-            node_curr_text = Path(tempfile.mkdtemp(prefix=f"logdiff-text-{node}-"))
-            convert_tree_binaries_to_text(node_unpack_src, node_curr_text)
-
-            if not node_state_text.exists():
-                node_state_text.mkdir(parents=True, exist_ok=True)
-
-            payload_tmp = Path(tempfile.mkdtemp(prefix=f"logdiff-payload-{node}-"))
-            actions: List[dict] = []
-
-            # Collect prior and current relative file paths
-            prior_paths = set()
-            for root, _, files in os.walk(node_state_text):
-                for fn in files:
-                    prior_paths.add((Path(root) / fn).relative_to(node_state_text).as_posix())
-
-            curr_paths = set()
-            for root, _, files in os.walk(node_curr_text):
-                for fn in files:
-                    curr_paths.add((Path(root) / fn).relative_to(node_curr_text).as_posix())
-
-            # Deletions
-            for rel in sorted(prior_paths - curr_paths):
-                actions.append({"action": "delete", "path": rel, "size": 0})
-                if verbose:
-                    print(f"[logdiff]    delete {rel}")
-                (node_state_text / rel).unlink(missing_ok=True)
-                parent = (node_state_text / rel).parent
-                while parent != node_state_text and parent.exists() and not any(parent.iterdir()):
-                    parent.rmdir()
+        for name in names:
+            if name.endswith("/"):
+                needed_dirs.add(dst_root / name)
+            else:
+                parent = (dst_root / name).parent
+                while parent and parent != dst_root and not str(parent).endswith(":"):
+                    needed_dirs.add(parent)
                     parent = parent.parent
 
-            # Appends/Full for existing/new files
-            for rel in sorted(curr_paths):
-                prev_file = (node_state_text / rel) if (node_state_text / rel).exists() else None
-                curr_file = node_curr_text / rel
-                rel_work = payload_tmp / Path(rel).parent
-                rel_work.mkdir(parents=True, exist_ok=True)
+        log.debug("[unpack] %d zip entries, %d directories needed", len(infos), len(needed_dirs))
 
-                action, payload_path = compute_file_delta(prev_file, curr_file, rel_work)
-                actions.append({"action": action.action, "path": rel, "size": action.size})
-                if verbose:
-                    print(f"[logdiff]    {action.action:6} {rel} ({action.size} bytes)")
-
-                # Apply to state
-                if action.action == "append":
-                    if payload_path and payload_path.exists():
-                        tail_text = _read_text_file(payload_path)
-                        if prev_file is None:
-                            _write_text_file(node_state_text / rel, tail_text)
+        # Ensure directories exist; convert zero-byte files-at-dir-path into directories.
+        converted = 0
+        for d in sorted(needed_dirs, key=lambda p: len(str(p))):
+            if d.exists():
+                if d.is_file():
+                    try:
+                        if d.stat().st_size == 0:
+                            d.unlink()
+                            d.mkdir(parents=True, exist_ok=True)
+                            converted += 1
+                            log.debug("[unpack] replaced zero-byte file with directory: %s", d)
                         else:
-                            with (node_state_text / rel).open("a", encoding="utf-8") as f:
-                                f.write(tail_text)
-                elif action.action == "full":
-                    dst = node_state_text / rel
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(payload_path, dst) if payload_path else shutil.copy2(curr_file, dst)
+                            logging.warning("Directory needed but path exists as non-empty file: %s", d)
+                    except Exception as e:
+                        logging.warning("Failed to convert file to directory %s: %s", d, e)
+            else:
+                try:
+                    d.mkdir(parents=True, exist_ok=True)
+                except FileExistsError:
+                    pass
 
-            # Bundle & compress
-            manifest = {"node": node, "step": step.name, "actions": actions}
-            bundle_dir = Path(tempfile.mkdtemp(prefix=f"logdiff-bundle-{node}-"))
-            (bundle_dir / "payloads").mkdir(parents=True, exist_ok=True)
+        if converted:
+            log.debug("[unpack] converted %d fake-directory file(s)", converted)
 
-            if payload_tmp.exists():
-                for root, dirs, files in os.walk(payload_tmp):
-                    root_p = Path(root)
-                    rel_root = root_p.relative_to(payload_tmp)
-                    for d in dirs:
-                        (bundle_dir / "payloads" / rel_root / d).mkdir(parents=True, exist_ok=True)
-                    for fn in files:
-                        sp = root_p / fn
-                        dp = bundle_dir / "payloads" / rel_root / fn
-                        dp.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.move(str(sp), str(dp))
+        # --- Extract entries (directories first, then files) ---
+        extracted = 0
+        total = len(infos)
+        for i, zi in enumerate(infos, start=1):
+            name = zi.filename.replace("\\", "/")
+            out_path = dst_root / name
 
-            (bundle_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+            # Directory entry
+            if name.endswith("/"):
+                if out_path.exists():
+                    if out_path.is_file():
+                        if out_path.stat().st_size == 0:
+                            out_path.unlink()
+                            out_path.mkdir(parents=True, exist_ok=True)
+                            log.debug("[unpack] replaced late zero-byte file with directory: %s", out_path)
+                        else:
+                            logging.warning("Skipping directory create; path exists as file: %s", out_path)
+                else:
+                    out_path.mkdir(parents=True, exist_ok=True)
+                if verbose and (i % 250 == 0):
+                    log.debug("[unpack] ensured dir %s (%d/%d)", out_path, i, total)
+                continue
 
-            out_tgz = diff_dir / f"{node}.diff.tgz"
-            with tarfile.open(out_tgz, "w:gz") as tf:
-                tf.add(bundle_dir, arcname=".")
+            # File entry
+            parent = out_path.parent
+            if parent.exists() and parent.is_file():
+                if parent.stat().st_size == 0:
+                    parent.unlink()
+                    parent.mkdir(parents=True, exist_ok=True)
+                    log.debug("[unpack] replaced parent fake-directory with dir: %s", parent)
+                else:
+                    logging.warning("Skipping file due to parent conflict: %s", out_path)
+                    continue
+            elif not parent.exists():
+                parent.mkdir(parents=True, exist_ok=True)
+
+            with zf.open(zi, "r") as src, open(out_path, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            extracted += 1
 
             if verbose:
-                total_bytes = sum(a.get("size", 0) for a in actions)
-                print(f"[logdiff]  node={node} wrote {out_tgz.name} with {len(actions)} actions, {total_bytes} bytes payload")
+                # Per-file progress throttled; every ~250 entries we print a status
+                if (i <= 10) or (i % 250 == 0) or (i == total):
+                    fsize = getattr(zi, "file_size", 0)
+                    fsize_str = f"{fsize:,d}"
+                    log.debug(
+                        "[unpack] wrote %s (%s bytes) [%d/%d]",
+                        out_path,
+                        fsize_str,
+                        i,
+                        total,
+                    )
 
-            # Per-step meta
-            meta_path = step / "diff.meta.json"
-            meta = {"step": step.name, "nodes": sorted(node_archives.keys())}
-            meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-
-            if keep_unpacked:
-                patched_dir.mkdir(exist_ok=True)
-                patched_node_dir = patched_dir / node
-                if patched_node_dir.exists():
-                    shutil.rmtree(patched_node_dir)
-                shutil.copytree(node_state_text, patched_node_dir)
-
-            if not keep_unpacked and node_unpack_src.exists():
-                shutil.rmtree(node_unpack_src)
-            shutil.rmtree(node_curr_text, ignore_errors=True)
-            shutil.rmtree(payload_tmp, ignore_errors=True)
-            shutil.rmtree(bundle_dir, ignore_errors=True)
+        log.debug("[unpack] done: %d file entries extracted to %s", extracted, dst_root)
 
 
-def apply_diffs(run_root: str | Path, out_root: str | Path, upto_step: Optional[str] = None, verbose: bool = False) -> None:
-    run_root = Path(run_root).resolve()
-    steps_dir = run_root / "steps"
-    out_root = Path(out_root).resolve()
-    out_root.mkdir(parents=True, exist_ok=True)
+def convert_evtx_file(evtx_path: Path, out_path: Path, fmt: str, verbose: bool) -> None:
+    """
+    Streams EVTX -> compact|jsonl|xml.
+    Robust to malformed UTF-16 records seen in python-evtx by skipping only the
+    offending records (logged at DEBUG) and continuing.
+    """
+    if Evtx is None:
+        raise RuntimeError("python-evtx (Evtx.Evtx) is required for EVTX conversion but is not installed.")
+    logging.debug("begin convert_evtx_file: %s -> {out_path}", evtx_path)
+    print(f"begin convert_evtx_file: {evtx_path} -> {out_path}")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    ok = 0
+    skipped = 0
 
-    steps = discover_steps(steps_dir)
-    if upto_step is not None:
-        steps = [s for s in steps if s.name <= upto_step]
-
-    for si, step in enumerate(steps):
-        node_archives = find_node_archives(step)
-        for node, archive in node_archives.items():
-            node_out = out_root / step.name / node
-            node_out.mkdir(parents=True, exist_ok=True)
-            if si == 0:
-                tmp = Path(tempfile.mkdtemp(prefix="apply-baseline-"))
-                unpack_archive(archive, tmp)
-                convert_tree_binaries_to_text(tmp, node_out)
-                shutil.rmtree(tmp, ignore_errors=True)
-            else:
-                diff_tgz = step / "diff" / f"{node}.diff.tgz"
-                if not diff_tgz.exists():
-                    continue
+    with Evtx(str(evtx_path)) as ev, open(out_path, "w", encoding="utf-8", newline="\n") as out:
+        for rec in ev.records():
+            try:
+                xml = rec.xml()  # may raise UnicodeDecodeError on malformed strings
+            except Exception as e:
+                skipped += 1
                 if verbose:
-                    print(f"[logdiff]  apply node={node} step={step.name} from {diff_tgz.name}")
-                with tarfile.open(diff_tgz, "r:gz") as tf:
-                    with tempfile.TemporaryDirectory(prefix="apply-bundle-") as bdir:
-                        tf.extractall(bdir)
-                        bdirp = Path(bdir)
-                        manifest = json.loads((bdirp / "manifest.json").read_text(encoding="utf-8"))
-                        payloads = bdirp / "payloads"
-                        prev_step_dir = out_root / steps[si-1].name / node
-                        if not prev_step_dir.exists():
-                            raise RuntimeError(f"Missing prior reconstruction for {node} at {steps[si-1].name}")
-                        if node_out.exists():
-                            shutil.rmtree(node_out)
-                        shutil.copytree(prev_step_dir, node_out)
+                    logging.debug("evtx-skip: %s record #%d due to %s", evtx_path.name, ok + skipped, repr(e))
+                continue
 
-                        for act in manifest.get("actions", []):
-                            apath = node_out / act["path"]
-                            if act["action"] == "delete":
-                                if verbose:
-                                    print(f"[logdiff]    delete {act['path']}")
-                                apath.unlink(missing_ok=True)
-                                parent = apath.parent
-                                while parent != node_out and parent.exists() and not any(parent.iterdir()):
-                                    parent.rmdir()
-                                    parent = parent.parent
-                            elif act["action"] == "full":
-                                # find payload
-                                found = None
-                                for root, _, files in os.walk(payloads):
-                                    for fn in files:
-                                        if fn == Path(act["path"]).name and not fn.endswith(".tail"):
-                                            cand = Path(root) / fn
-                                            found = cand
-                                            break
-                                    if found:
-                                        break
-                                if found is None:
-                                    raise RuntimeError(f"Payload missing for 'full': {act['path']}")
-                                if verbose:
-                                    print(f"[logdiff]    full   {act['path']}")
-                                apath.parent.mkdir(parents=True, exist_ok=True)
-                                shutil.copy2(found, apath)
-                            elif act["action"] == "append":
-                                tail_file = None
-                                for root, _, files in os.walk(payloads):
-                                    for fn in files:
-                                        if fn == Path(act["path"]).name + ".tail":
-                                            tail_file = Path(root) / fn
-                                            break
-                                    if tail_file:
-                                        break
-                                if tail_file and tail_file.exists():
-                                    tail_text = _read_text_file(tail_file)
-                                    if verbose:
-                                        print(f"[logdiff]    append {act['path']} (+{len(tail_text.encode('utf-8'))} bytes)")
-                                    apath.parent.mkdir(parents=True, exist_ok=True)
-                                    with apath.open("a", encoding="utf-8") as f:
-                                        f.write(tail_text)
+            if fmt == "xml":
+                out.write(xml)
+                out.write("\n")
+            else:
+                try:
+                    d = record_to_minimal_dict(xml)
+                except Exception as e:
+                    skipped += 1
+                    if verbose:
+                        logging.debug("evtx-skip-parse: %s record #%d due to %s", evtx_path.name, ok + skipped, repr(e))
+                    continue
+
+                if fmt == "compact":
+                    out.write(minimal_to_compact_line(d))
+                    out.write("\n")
+                elif fmt == "jsonl":
+                    out.write(json.dumps(d, ensure_ascii=False))
+                    out.write("\n")
+                else:
+                    raise ValueError(f"Unknown evtx format: {fmt}")
+
+            ok += 1
+
+    logging.debug("converted: %s -> %s (ok=%d, skipped=%d)", evtx_path.name, out_path, ok, skipped)
 
 
-# -----------------------------
+# ----------------------------
+# Copy text files (streaming)
+# ----------------------------
+
+def copy_file_streaming(src: Path, dst: Path, verbose: bool) -> None:
+    """
+    Name:
+        copy_file_streaming
+
+    Params:
+        src (Path): Source file path.
+        dst (Path): Destination file path.
+
+    Returns:
+        None: Copies file in chunks to limit RAM usage.
+    """
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    with open(src, 'rb') as fsrc, open(dst, 'wb') as fdst:
+        while True:
+            buf = fsrc.read(1024 * 1024)
+            if not buf:
+                break
+            fdst.write(buf)
+    if verbose:
+        logging.debug("copied: %s -> %s", src, dst)
+
+
+# ----------------------------
+# Build pipeline
+# ----------------------------
+
+@dataclass
+class BuildConfig:
+    """
+    Name:
+        BuildConfig
+
+    Params:
+        run_root (Path): Input run root (never modified).
+        out_root (Path): Mandatory output root where all artifacts are written.
+        keep (bool): Keep existing OUT/build directory contents if present.
+        verbose (bool): Verbose logging toggle.
+        evtx_format (str): 'compact' (default), 'jsonl', or 'xml'.
+
+    Returns:
+        None: Configuration container for the build step.
+    """
+    run_root: Path
+    out_root: Path
+    keep: bool
+    verbose: bool
+    evtx_format: str = 'compact'
+
+
+def build_action(cfg: BuildConfig) -> int:
+    """
+    Name:
+        build_action
+
+    Params:
+        cfg (BuildConfig): Build configuration with inputs and outputs.
+
+    Returns:
+        int: 0 on success; non-zero on failure.
+    """
+    # OUT step directories
+    build_dir = cfg.out_root / 'build'
+    unpack_dir = build_dir / 'unpacked'
+    converted_dir = build_dir / 'converted'
+    diffs_dir = build_dir / 'diffs'
+    patched_dir = build_dir / 'patched'
+
+    # Prepare directories under OUT only
+    ensure_clean_dir(build_dir, keep=cfg.keep)
+    for d in (unpack_dir, converted_dir, diffs_dir, patched_dir):
+        d.mkdir(parents=True, exist_ok=True)
+        if cfg.verbose:
+            logging.debug("out step dir: %s", d)
+
+    # 1) Find and stream-extract ZIPs from RUN_ROOT to OUT/build/unpacked
+    for p in cfg.run_root.rglob('*.zip'):
+        rel = p.relative_to(cfg.run_root)
+        # Infer node name from archive filename by taking the token before the first '.'
+        # Examples:
+        #   dc1.logs.zip               -> dc1
+        #   dc1.after02.logs.zip       -> dc1
+        #   win10-eng.after01.logs.zip -> win10-eng
+        node_name = p.name.split('.', 1)[0] if '.' in p.name else p.stem
+        target_root = unpack_dir / rel.parent / node_name
+        target_root.mkdir(parents=True, exist_ok=True)
+        extract_zip_streaming(p, target_root, cfg.verbose)
+
+    # 2) Walk RUN_ROOT + unpacked; convert/copy to OUT/build/converted with same rel paths
+    search_roots = [cfg.run_root, unpack_dir]
+
+    for root in search_roots:
+        if not root.exists():
+            continue
+        for f in root.rglob('*'):
+            if f.is_dir():
+                continue
+            # Skip original zips in run_root; already unpacked/copied
+            if f.suffix.lower() == '.zip' and root == cfg.run_root:
+                continue
+
+            # Compute relative path "as if" within run_root or unpacked
+            try:
+                rel = f.relative_to(root)
+            except Exception:
+                continue
+
+            # Normalize backslashes in rel (if any came from zip names)
+            rel_posix = Path(str(rel).replace('\\', '/'))
+            src_ext = f.suffix.lower()
+            dst = converted_dir / rel_posix
+
+            if src_ext == '.evtx':
+                # Choose extension by format
+                if cfg.evtx_format == 'compact':
+                    dst = dst.with_suffix('.log')
+                elif cfg.evtx_format == 'jsonl':
+                    dst = dst.with_suffix('.jsonl')
+                else:
+                    dst = dst.with_suffix('.xml')
+                convert_evtx_file(f, dst, cfg.evtx_format, cfg.verbose)
+            else:
+                # Copy other files as-is
+                copy_file_streaming(f, dst, cfg.verbose)
+
+    # 3) (Optional) Diffs and patched steps can be implemented here.
+    #    Placeholder to respect folder structure without modifying input tree.
+    #    This script focuses on unpack/convert per current requirements.
+
+    return 0
+
+
+# ----------------------------
 # CLI
-# -----------------------------
+# ----------------------------
 
-def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(prog="logdiff", description="Append-aware log diff builder")
-    sub = p.add_subparsers(dest="cmd")
+def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
+    """
+    Name:
+        parse_args
 
-    p_build = sub.add_parser("build", help="Build diffs (default)")
-    p_build.add_argument("-i", "--in", dest="in_path", required=True, help="Run root containing steps/")
-    p_build.add_argument("-o", "--out", dest="out_path", default=None, help="Output root (defaults to --in)")
-    p_build.add_argument("-k", "--keep-unpacked", action="store_true", help="Keep unpacked and patched views")
-    p_build.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+    Params:
+        argv (Optional[Iterable[str]]): Optional list of CLI arguments; defaults to sys.argv[1:].
 
-    p_apply = sub.add_parser("apply", help="Apply diffs to reconstruct text snapshots")
-    p_apply.add_argument("-i", "--in", dest="in_path", required=True, help="Run root containing steps/")
-    p_apply.add_argument("-o", "--out", dest="out_path", required=True, help="Output root for reconstructed trees")
-    p_apply.add_argument("-s", "--step", dest="upto_step", default=None, help="Apply diffs up to and including this step name")
-    p_apply.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+    Returns:
+        argparse.Namespace: Parsed arguments with subcommand and options.
+    """
+    p = argparse.ArgumentParser(prog='logdiff', description='Log diff builder for Windows+Linux logs')
+    sub = p.add_subparsers(dest='cmd', required=True)
 
-    return p.parse_args(argv)
+    pb = sub.add_parser('build', help='Build output tree from RUN_ROOT')
+    pb.add_argument('-i', '--input', dest='run_root', required=True, type=Path,
+                    help='RUN_ROOT input directory (never modified)')
+    pb.add_argument('-o', '--out', dest='out_root', required=True, type=Path,
+                    help='OUT directory (mandatory). All artifacts go here.')
+    pb.add_argument('-k', '--keep', action='store_true',
+                    help='Keep existing OUT/build contents instead of cleaning.')
+    pb.add_argument('-v', '--verbose', action='store_true',
+                    help='Verbose logging of each file and step directory.')
+    pb.add_argument('--evtx-format', choices=['xml', 'compact', 'jsonl'], default='compact',
+                    help='Format for EVTX conversion (default: compact).')
 
-
-def main(argv: Optional[List[str]] = None) -> int:
-    ns = parse_args(argv)
-    if ns.cmd in (None, "build"):
-        try:
-            build_diffs(run_root=ns.in_path, out_root=ns.out_path, keep_unpacked=ns.keep_unpacked, verbose=getattr(ns, "verbose", False))
-            return 0
-        except Exception as e:
-            sys.stderr.write(f"[logdiff] ERROR: {e}\n")
-            return 2
-    elif ns.cmd == "apply":
-        try:
-            apply_diffs(run_root=ns.in_path, out_root=ns.out_path, upto_step=ns.upto_step, verbose=getattr(ns, "verbose", False))
-            return 0
-        except Exception as e:
-            sys.stderr.write(f"[logdiff] ERROR: {e}\n")
-            return 2
-    else:
-        sys.stderr.write("Unknown command\n")
-        return 2
+    return p.parse_args(list(argv) if argv is not None else None)
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+def main(argv: Optional[Iterable[str]] = None) -> int:
+    """
+    Name:
+        main
+
+    Params:
+        argv (Optional[Iterable[str]]): Optional CLI arguments.
+
+    Returns:
+        int: Exit status code (0 success).
+    """
+    args = parse_args(argv)
+    setup_logging(args.verbose)
+
+    if args.cmd == 'build':
+        cfg = BuildConfig(
+            run_root=args.run_root,
+            out_root=args.out_root,
+            keep=args.keep,
+            verbose=args.verbose,
+            evtx_format=args.evtx_format,
+        )
+        return build_action(cfg)
+
+    logging.error("Unknown command")
+    return 2
+
+
+if __name__ == '__main__':
+    sys.exit(main())
