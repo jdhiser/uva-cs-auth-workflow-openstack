@@ -1,11 +1,17 @@
 #!/bin/bash 
 
-WORKFLOWS="browse_iis"
+WORKFLOWS="browse_iis moodle"
 IMPACTS="confidentiality availability integrity"
-NODES=" dc1 dc2 iis rootca subca win10-eng win10-fin win10-hr"
+SEEDS="1 2"
+CLOUD_CONFIG="cloud-configs/axes-proj1-ubuntu.json"
+ENTERPRISE_CONFIG="enterprise-configs/cyberfortress-enterprise-full.json"
+USER_ROLES="user_roles/user-roles.json"
+LOGINS="./logins.json"
+POST_DEPLOY_OUTPUT="post-deploy-output.json"
 
 main()
 {
+	local NODES="$(cat $ENTERPRISE_CONFIG |jq .nodes[].name -r)"
 
 	for workflow in $WORKFLOWS
 	do
@@ -13,18 +19,21 @@ main()
 		do
 			for node in $NODES
 			do
-				./clean-nodes.py post-deploy-output.json
-				./deploy-nodes.py 
-				./collect-logs.py -p post-deploy-output.json --enterprise-json enterprise-configs/cyberfortress-enterprise.json  -w browse_iis -o iis-workflow  -P  -v --logins ./logins.json
-				./clean-nodes.py post-deploy-output.json
+				for seed in $SEEDS
+				do
+					local outpath="logs/
+
+					./clean-nodes.py $POST_DEPLOY_OUTPUT || true
+					./deploy-nodes.py  -c $CLOUD_CONFIG -e $ENTERPRISE_CONFIG
+					./post-deploy.py  deploy-output.json
+					./simulate-logins.py $USER_ROLES $ENTERPRISE $POST_DEPLOY_OUTPUT
+					./collect-logs.py -p $POST_DEPLOY_OUTPUT --enterprise-json $ENTERPRISE  $workflow -P  -v --logins $LOGINS -o $outpath
+					./clean-nodes.py post-deploy-output.json
+				done
 			done
 
 		done
 	done
-
-
-
-
 }
 
 main "$@"
