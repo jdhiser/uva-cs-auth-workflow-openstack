@@ -34,12 +34,14 @@
 		{
                         "name": "win10-fin",
                         "os": "windows_10_pro-openstack",
+			"size": "large",
                         "domain": "castle",
                         "roles": [ "endpoint", "windows", "personal" ],
                         "user": "standard user"
                 },
 		{
                         "name": "win10-hr",
+			"size": "large",
                         "os": "windows_10_pro-openstack",
                         "domain": "castle",
                         "roles": [ "endpoint", "windows", "personal" ],
@@ -47,6 +49,7 @@
                 },
                 {
                         "name": "win10-eng",
+			"size": "large",
                         "os": "windows_10_pro-openstack",
                         "domain": "castle",
                         "roles": [ "endpoint", "windows", "personal" ],

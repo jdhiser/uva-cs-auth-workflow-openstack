@@ -11,7 +11,9 @@
 	},
 	"instance_size_map": 
 	{
-		"small": "m1.small"
+		"small": "m1.small",
+		"medium": "m1.medium",
+		"large": "m1.large"
 	},
 	"security_group": "All_Traffic",
 	"enterprise_url": "castle.os"

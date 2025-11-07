@@ -127,7 +127,7 @@ class OpenstackCloud:
         return self.cloud_config['image_map'][os_name]
 
     def size_to_flavor(self, size_name):
-        return self.cloud_config['instance_size_map'].get(size_name, "m1.small")
+        return self.cloud_config['instance_size_map'].get(size_name, size_name) 
 
     def find_image_by_name(self, name):
         images = self.glclient.images.list()

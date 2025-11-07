@@ -876,7 +876,7 @@ def setup_root_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_deta
     except Exception as e:
         raise RuntimeError(f"Failed to verify AD CS: {e}")
 
-    if 'CertUtil: -CAInfo command completed successfully' not in str(verify_stdout):
+    if '  Verified RootCA was setup properly' not in str(verify_stdout):
         print(f"adcs_stdout={adcs_stdout}")
         print(f"adcs_stderr={adcs_stderr}")
         print(f"adcs_exit_status={adcs_exit_status}")
