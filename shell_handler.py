@@ -300,34 +300,27 @@ class ShellHandler:
         timestamp = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
         basename = os.path.splitext(os.path.basename(filename))[0]
         log_path = f"C:\\tmp\\{basename}.{timestamp}.log"
-        trace_path = f"{log_path}.trace.txt"
         script_path = f"C:\\tmp\\{basename}.ps1"
         wrapper_path = f"C:\\tmp\\{basename}_wrapper.ps1"
 
         # Write actual user script
         self.put_file_from_string(script_path, script_contents)
 
-        # Write wrapper script that traces only PS engine via Trace-Command; transcript captures stdout/stderr.
+        # Write wrapper script that enables tracing and logging in the child script
         wrapper_contents = f"""
 $OutputEncoding = [System.Text.Encoding]::UTF8
 Start-Transcript -Path "{log_path}" -Force
 
 try {{
     Write-Host "=== Starting ps1 ==="
-
-    $scriptBlock = {{ . "{script_path}" }}
-
-    $null = Trace-Command -Name Cmdlet,ScriptBlock,ParameterBinding `
-        -Option All `
-        -Expression $scriptBlock `
-        -FilePath "{trace_path}"
-
-    # Exit code preference:
-    # - If a native exe set a non-zero $LASTEXITCODE, use that.
-    # - Else if the last PowerShell statement failed ($? is $false), return 1.
-    # - Else return 0.
-    $exitCode = if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) {{ $LASTEXITCODE }} `
-                elseif (-not $?) {{ 1 }} else {{ 0 }}
+    $command = @'
+Set-PSDebug -Trace 1
+. "{script_path}"
+Set-PSDebug -Trace 0
+'@
+    $output = powershell -ExecutionPolicy Bypass -NoProfile -Command $command *>&1
+    $exitCode = $LASTEXITCODE
+    $output | ForEach-Object {{ Write-Host $_ }}
 
     Write-Host "=== Finished ps1 ==="
     exit $exitCode

@@ -1089,7 +1089,7 @@ def link_subordinate_to_root(root_info, sub_info):
 
     # Step 3: Submit request on root CA and save .cer
     sign_cmd = f"""
-certreq -submit -q -attrib "CertificateTemplate:SubCA" "{remote_req}" "{remote_cer}"
+certreq -submit -q -f -attrib "CertificateTemplate:SubCA" "{remote_req}" "{remote_cer}"
 Restart-Service certsvc
 """
     stdout, stderr, exit_status = root_shell.execute_powershell_multiline(sign_cmd, verbose=verbose, filename="sign_request.ps1")

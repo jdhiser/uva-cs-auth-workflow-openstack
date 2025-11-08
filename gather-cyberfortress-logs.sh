@@ -28,8 +28,10 @@ do_workflow()
 
 	local outpath="$OUTPATH_BASE/workflow=$workflow.impact=$impact.impact_node=$impact_node.workflow_node=$workflow_node.seed=$seed"
 
-	./cleanup-nodes.py "$POST_DEPLOY_OUTPUT" || true
+	./cleanup-nodes.py "$DEPLOY_OUTPUT" || true
+	sleep 1m # time for cleanup to finish
 	./deploy-nodes.py  -c "$CLOUD_CONFIG" -e "$ENTERPRISE_CONFIG"
+	sleep 5m  # wait for machines to deploy
 	./post-deploy.py  "$DEPLOY_OUTPUT"
 	./simulate-logins.py --seed "$seed" "$USER_ROLES" "$ENTERPRISE_CONFIG" "$POST_DEPLOY_OUTPUT"
 	if [[ $impact = none ]]
@@ -38,7 +40,7 @@ do_workflow()
 	else
 		./collect-logs.py -p "$POST_DEPLOY_OUTPUT" --enterprise-json "$ENTERPRISE_CONFIG" --impact "$impact_node=$impact" -w "$workflow_node=$workflow" -P  -v --logins "$LOGINS" -o "$outpath"
 	fi
-	./clean-nodes.py "$POST_DEPLOY_OUTPUT"
+	./cleanup-nodes.py "$POST_DEPLOY_OUTPUT"
 }
 
 main()

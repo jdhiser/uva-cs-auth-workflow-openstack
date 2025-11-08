@@ -210,7 +210,6 @@ def extract_zip_streaming(zip_path: Path, dst_root: Path, verbose: bool = False)
 
     # If caller asked for verbosity, ensure our logger actually emits
     if verbose:
-        #log.setLevel(logging.DEBUG)
         if not log.handlers:
             h = logging.StreamHandler()
             h.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
