@@ -176,21 +176,26 @@ def leader_pass(leaders: dict, dom: Optional[str]) -> Optional[str]:
 """
 Function: os_hint_of
 Inputs:
-    (see function signature)
+    n: dict - Node record from post-deploy JSON (enterprise_built.deployed.nodes)
 Returns:
-    (see description)
+    str - 'windows' or 'linux'
 Description:
-    Infer the OS type string from node metadata.
+    Determine OS type based on the node's roles. If any role contains
+    the word "windows", return "windows"; otherwise return "linux".
 """
 
 
 def os_hint_of(n: dict) -> str:
-    for k in ("os", "os_type", "platform", "family"):
-        v = n.get(k)
-        if isinstance(v, str):
-            return v.lower()
-    name = n.get("name", "") or n.get("hostname", "")
-    return "windows" if name.lower().startswith(("win", "dc", "iis", "rootca", "subca")) else "linux"
+    """
+    Determine OS type from post-deploy node dict.
+
+    Rule: if the node's role list (from enterprise_description.roles)
+    contains "windows", return "windows"; else "linux".
+    """
+    roles = (n.get("enterprise_description") or {}).get("roles", [])
+    if any(isinstance(r, str) and "windows" in r.lower() for r in roles):
+        return "windows"
+    return "linux"
 
 
 _IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")

@@ -46,7 +46,8 @@ do_workflow()
 main()
 {
 	# record some paths
-	mapfile -t nodes < <(jq -r '.nodes[].name' "$ENTERPRISE_CONFIG")
+	mapfile -t impact_nodes < <(jq -r '.nodes[].name' "$ENTERPRISE_CONFIG")
+	mapfile -t workflow_nodes < <(jq -r '.nodes[] | select(.roles | index("endpoint")) | .name' "$ENTERPRISE_CONFIG")
 
 	local metapath="$OUTPATH_BASE/meta"
 
@@ -63,7 +64,7 @@ main()
 	# deploy, provision, simulate and  
 	for workflow in "${WORKFLOWS[@]}"
 	do
-		for workflow_node in "${nodes[@]}"
+		for workflow_node in "${workflow_nodes[@]}"
 		do
 			for seed in "${SEEDS[@]}"
 			do
@@ -73,7 +74,7 @@ main()
 					then
 						do_workflow "$workflow" "$impact" "" "$workflow_node" "$seed"
 					else
-						for impact_node in "${nodes[@]}"
+						for impact_node in "${impact_nodes[@]}"
 						do
 							do_workflow "$workflow" "$impact" "$impact_node" "$workflow_node" "$seed"
 						done

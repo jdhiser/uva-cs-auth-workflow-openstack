@@ -300,6 +300,7 @@ def emulate_login(
     stderr2 = []
     status1 = None
     status2 = None
+    cmd1 = 'echo ' + json.dumps(login) + " > action.json"
     try:
         if use_fake_fromip:
             del_command = apply_fake_fromip(dev, mac, from_ip_str)
@@ -308,7 +309,6 @@ def emulate_login(
 
         shell = ShellHandler(targ_ip, fq_username, password=password, from_ip=from_ip_str, verbose=verbose)
 
-        cmd1 = 'echo ' + json.dumps(login) + " > action.json"
         stdout1, stderr1, status1 = shell.execute_cmd(cmd1)
 
         if is_windows:

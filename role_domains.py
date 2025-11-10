@@ -33,6 +33,32 @@ if ($LASTEXITCODE -ne 0) {
 
 """
 
+#
+# Function: fqdn_to_dn
+# --------------------
+# Convert a fully-qualified domain name (FQDN) into an LDAP-style
+# distinguished name suffix suitable for AD CS (e.g., "DC=castle,DC=project1,DC=os").
+#
+# Parameters:
+#   fqdn_domain_name (str): Domain FQDN such as "castle.project1.os"
+#
+# Returns:
+#   str: Distinguished name string such as "DC=castle,DC=project1,DC=os"
+#
+
+
+def fqdn_to_dn(fqdn_domain_name: str) -> str:
+    # Split the FQDN into labels (castle, project1, os)
+    parts = fqdn_domain_name.strip().split('.')
+
+    # Remove any empty components (defensive)
+    parts = [p for p in parts if p]
+
+    # Join them as DC components
+    dn = ','.join(f"DC={p}" for p in parts)
+
+    return dn
+
 
 def deploy_forest(cloud_config, name, control_ipv4_addr, game_ipv4_addr, password, domain):
 
@@ -785,6 +811,7 @@ def setup_root_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_deta
     domain_name = node['domain']
     enterprise_name = cloud_config['enterprise_url']
     fqdn_domain_name = domain_name + '.' + enterprise_name
+    dn_suffix = fqdn_to_dn(fqdn_domain_name)
     leader_admin_password = leader_details['admin_pass']
     game_leader_addrs = leader_details['game_addr']
     roles = node['roles']
@@ -821,6 +848,7 @@ def setup_root_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_deta
                     -HashAlgorithmName SHA256 `
                     -ValidityPeriod Years -ValidityPeriodUnits 5 `
                     -CACommonName "{domain_name}-RootCA" `
+                    -CADistinguishedNameSuffix "{dn_suffix}" `
                     -Force
                 Write-Host "Install-AdcsCertificationAuthority succeeded."
                 break
@@ -925,6 +953,7 @@ def setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, lead
     domain_name = node['domain']
     enterprise_name = cloud_config['enterprise_url']
     fqdn_domain_name = domain_name + '.' + enterprise_name
+    dn_suffix = fqdn_to_dn(fqdn_domain_name)
     leader_admin_password = leader_details['admin_pass']
     game_leader_addrs = leader_details['game_addr']
     roles = node['roles']
@@ -973,7 +1002,11 @@ def setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, lead
             }}
 
             try {{
-                Install-AdcsCertificationAuthority -CAType EnterpriseSubordinateCA -Force -CACommonName "{domain_name}-SubCA"
+                Install-AdcsCertificationAuthority  `
+                    -CAType EnterpriseSubordinateCA  `
+                    -CACommonName "{domain_name}-SubCA" `
+                    -CADistinguishedNameSuffix "{dn_suffix}" `
+                    -Force
                 Write-Host "AD CS SubordinateCA request created (attempt $i)."
                 $success = $true
                 break
