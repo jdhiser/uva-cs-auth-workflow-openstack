@@ -84,7 +84,7 @@ def run_impact(impact_type: str, node_name: str, enterprise: dict) -> None:
 
     print_result(impact_type, node_name)
     handler = impact_handlers[impact_type]
-    handler(node, enterprise)
+    return handler(node, enterprise)
 
 
 #

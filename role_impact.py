@@ -25,9 +25,10 @@ def impact_availability(node: dict, enterprise: dict) -> dict:
     node_desc = node['enterprise_description']
     domain = node_desc['domain']
     domain_details = domain_leaders[domain]
+    enterprise_url = enterprise['backend_config']['enterprise_url']
     control_ip = node['addresses'][0]['addr']
     domain = node['domain']
-    user = 'ubuntu' if 'linux' in node_desc['roles'] else 'administrator'
+    user = 'ubuntu' if 'linux' in node_desc['roles'] else f'administrator@{domain}.{enterprise_url}'
     password = None if 'linux' in node_desc['roles'] else domain_details['admin_pass']
 
     result = {
@@ -321,8 +322,9 @@ def impact_confidentiality(node: dict, enterprise: dict) -> dict:
     domain = node_desc['domain']
     domain_leaders = enterprise['enterprise_built']['setup']['setup_domains']['domain_leaders']
     domain_details = domain_leaders[domain]
+    enterprise_url = enterprise['backend_config']['enterprise_url']
 
-    user = 'ubuntu' if 'linux' in node_desc['roles'] else 'administrator'
+    user = 'ubuntu' if 'linux' in node_desc['roles'] else f'administrator@{domain}.{enterprise_url}'
     password = None if 'linux' in node_desc['roles'] else domain_details['admin_pass']
 
     result = {
@@ -394,7 +396,7 @@ OUTER
         return result
 
     try:
-        if 'windwos' in node_desc['roles']:
+        if 'windows' in node_desc['roles']:
             impact_shell = ShellHandler(control_ip, 'impactadmin', 'pwned', verbose=verbose)
             cmd = (
                 "if (([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { Write-Output 'impactadmin has administrative privileges.' } else { Write-Output 'impactadmin does NOT have administrative privileges.' }"

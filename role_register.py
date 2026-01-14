@@ -3,13 +3,14 @@ from shell_handler import ShellHandler
 verbose = False
 
 
-def do_rename_adapter(control_ip: str, user: str, password: str, rename_ip: str, new_name: str):
+def do_rename_adapter(control_ip: str, user: str, password: str, rename_ip: str, new_name: str, index: int):
 
     rename_cmd = f"""
         $ipAddr="{rename_ip}"
         $new_name="{new_name}"
         $adapter = Get-NetIPAddress -IPAddress $ipAddr| Select-Object -ExpandProperty InterfaceAlias
         Rename-NetAdapter -Name $adapter -NewName $new_name
+        Set-NetIPInterface -InterfaceAlias "control-adapter" -InterfaceMetric {index}
         write-output "It worked!"
         """
 
@@ -29,10 +30,10 @@ def register_windows_instance(obj):
     password = obj['password']
     user = 'Administrator'
 
-    game_rename = do_rename_adapter(control_ipv4_addr, user, password, game_ipv4_addr, "game-adapter")
+    game_rename = do_rename_adapter(control_ipv4_addr, user, password, game_ipv4_addr, "game-adapter", 50)
     control_rename = ""
     if not game_ipv4_addr == control_ipv4_addr:
-        control_rename = do_rename_adapter(control_ipv4_addr, user, password, control_ipv4_addr, "control-adapter")
+        control_rename = do_rename_adapter(control_ipv4_addr, user, password, control_ipv4_addr, "control-adapter", 10)
 
     cmd = (
         'slmgr.vbs /skms uvakms.eservices.virginia.edu; Start-Sleep -s 15; slmgr.vbs /ato; start-sleep -s 45; ' +

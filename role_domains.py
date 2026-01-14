@@ -1,3 +1,4 @@
+import os
 import time
 import role_fs
 import paramiko
@@ -864,6 +865,15 @@ def setup_root_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_deta
             }}
         }}
 
+        # debug output
+        Get-ChildItem C:\Windows\System32\CertSrv\CertEnroll | Where-Object Name -like "*RootCA*"
+
+        # make sure certs are published.
+        certutil -dspublish -f "C:\Windows\System32\CertSrv\CertEnroll\{name}.{domain_name}.{enterprise_name}_{domain_name}-RootCA.crt" RootCA
+        certutil -dspublish -f "C:\Windows\System32\CertSrv\CertEnroll\{name}.{domain_name}.{enterprise_name}_{domain_name}-RootCA.crt" NTAuthCA
+        certutil -dspublish -f "C:\Windows\System32\CertSrv\CertEnroll\{domain_name}-RootCA.crl"
+        certutil -dspublish -f "C:\Windows\System32\CertSrv\CertEnroll\{domain_name}-RootCA+.crl"
+
         """
 
     # Create a shell session to the target machine
@@ -972,57 +982,122 @@ def setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, lead
         domain_name,
         password
     )
+
     print(f"  Installing Subordinate AD CS for node {name}")
+    cmd = gpupdate_str + f"""
 
-    cmd = f"""
-        Install-WindowsFeature AD-Domain-Services
-        Get-ADDomain
-        whoami /groups
-        echo %LOGONSERVER%
-        klist
-        w32tm /query /status
-        Install-WindowsFeature ADCS-Cert-Authority
-        Import-Module ADCSDeployment
-        echo "LOGONSERVER=$env:LOGONSERVER"
-        nltest /dsgetdc:{domain_name}
+    Write-Host "=== Subordinate CA install starting for {name} ({domain_name}) ==="
 
-        $maxRetries = 20
-        $retryDelay = 30
-        $success = $false
+    # Basic domain / time sanity checks
+    Install-WindowsFeature AD-Domain-Services
+    Get-ADDomain
+    whoami /groups
+    Write-Host "LOGONSERVER env var at start: $env:LOGONSERVER"
+    klist
+    w32tm /query /status
 
+    # Ensure ADCS role is present
+    Install-WindowsFeature ADCS-Cert-Authority
+    Import-Module ADCSDeployment
+
+    # Confirm we can find a DC
+    nltest /dsgetdc:{domain_name}
+
+    function Get-SubCAState {{
+        param(
+            [Parameter(Mandatory=$true)][string] $CACommonName
+        )
+
+        $feature     = Get-WindowsFeature ADCS-Cert-Authority
+        $hasFeature  = $feature -and $feature.Installed
+
+        $configKey   = "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\CertSvc\\Configuration\\$CACommonName"
+        $hasConfig   = Test-Path $configKey
+
+        $caInfoOk    = $false
+        try {{
+            $out = certutil -CAInfo | Out-String
+            if ($out -match 'CertUtil: -CAInfo command completed successfully') {{
+                $caInfoOk = $true
+            }}
+        }} catch {{
+            # ignore, just report false
+        }}
+
+        [PSCustomObject]@{{
+            FeatureInstalled = $hasFeature
+            ConfigExists     = $hasConfig
+            CAInfoOk         = $caInfoOk
+        }}
+    }}
+
+    $maxRetries = 20
+    $retryDelay = 30
+    $success    = $false
+    $caName     = "{domain_name}-SubCA"
+
+    # If the SubCA already appears installed and healthy, treat this as success
+    $state = Get-SubCAState -CACommonName $caName
+    if ($state.CAInfoOk -and $state.ConfigExists) {{
+        Write-Host "Subordinate CA '$caName' already appears fully configured. Skipping Install-AdcsCertificationAuthority."
+        $success = $true
+    }}
+
+    if (-not $success) {{
         for ($i = 1; $i -le $maxRetries; $i++) {{
             Write-Host ("[{0}] === Attempt $i of $maxRetries ===" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"))
-            Write-Host "LOGONSERVER env var: $env:LOGONSERVER"
+            Write-Host "LOGONSERVER env var (attempt $i): $env:LOGONSERVER"
+
             try {{
                 $rootdse = [ADSI]"LDAP://RootDSE"
                 Write-Host "Connected Config NC: $($rootdse.configurationNamingContext)"
-                Write-Host "Connected to DC: $($rootdse.dnsHostName)"
+                Write-Host "Connected to DC    : $($rootdse.dnsHostName)"
             }} catch {{
                 Write-Warning "Could not read RootDSE: $($_.Exception.Message)"
             }}
 
             try {{
-                Install-AdcsCertificationAuthority  `
-                    -CAType EnterpriseSubordinateCA  `
-                    -CACommonName "{domain_name}-SubCA" `
+                Install-AdcsCertificationAuthority `
+                    -CAType EnterpriseSubordinateCA `
+                    -CACommonName $caName `
                     -CADistinguishedNameSuffix "{dn_suffix}" `
                     -Force
+
                 Write-Host "AD CS SubordinateCA request created (attempt $i)."
                 $success = $true
                 break
             }} catch {{
-                Write-Warning "Attempt $i failed: $($_.Exception.Message)"
+                $msg = $_.Exception.Message
+                Write-Warning "Attempt $i failed: $msg"
                 Write-Warning ("Full exception: {0}" -f ($_.Exception | Format-List * | Out-String))
 
-                # Collect additional context to help debugging
+                # If the CA is already installed, treat this as success (idempotent behavior).
+                if ($msg -match 'The Certification Authority is already installed') {{
+                    Write-Host "CA reports as already installed. Treating as success for idempotency."
+                    $success = $true
+                    break
+                }}
+
+                # Collect additional context to help debugging real failures
                 Write-Host "Current Kerberos tickets:"
                 klist
+
                 Write-Host "Current group memberships:"
                 whoami /groups
+
                 Write-Host "Time sync status:"
                 w32tm /query /status
-                Write-Host "Preferred DC info:"
+
+                Write-Host "Secure channel / DC info:"
                 nltest /sc_query:{domain_name}
+
+                # Re-check CA state after the failure – if it became healthy, stop retrying.
+                $stateAfter = Get-SubCAState -CACommonName $caName
+                if ($stateAfter.CAInfoOk -and $stateAfter.ConfigExists) {{
+                    Write-Host "After failure, CA now appears healthy. Treating as success."
+                    $success = $true
+                    break
+                }}
 
                 if ($i -lt $maxRetries) {{
                     Write-Host "Sleeping $retryDelay seconds before retry..."
@@ -1035,23 +1110,41 @@ def setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, lead
                 }}
             }}
         }}
+    }}
+
+    if (-not $success) {{
+        Write-Error "Subordinate CA install did not complete successfully."
+        exit 1
+    }} else {{
+        Write-Host "Subordinate CA install completed or was already present."
+    }}
 """
 
-    shell = ShellHandler(control_ipv4_addr, domain_name + '\\' + 'administrator', leader_admin_password)
     try:
-        adcs_stdout, adcs_stderr, adcs_exit_status = shell.execute_powershell_multiline(
-            cmd, filename="install-subca.ps1", verbose=verbose)
+        adcs_exit_status = 1
+        count = 0
+        while count < 5 and adcs_exit_status != 0:
+            shell = ShellHandler(control_ipv4_addr, domain_name + '\\' + 'administrator', leader_admin_password)
+            adcs_stdout, adcs_stderr, adcs_exit_status = shell.execute_powershell_multiline(
+                cmd, filename="install-subca.ps1", verbose=verbose)
+            count += 1
     except Exception as e:
         raise RuntimeError(f"Authentication failed: {e}")
 
     # Verify Subordinate CA role installed
-    verify_cmd = "Get-WindowsFeature ADCS-Cert-Authority"
-    try:
-        verify_stdout, verify_stderr, verify_exit_status = shell.execute_powershell(verify_cmd, verbose=verbose)
-    except Exception as e:
-        raise RuntimeError(f"Failed to verify AD CS: {e}")
+    verify_stdout = None
+    for attempt in range(3):
+        verify_cmd = "Get-WindowsFeature ADCS-Cert-Authority"
+        shell = ShellHandler(control_ipv4_addr, domain_name + '\\' + 'administrator', leader_admin_password)
+        try:
+            verify_stdout, verify_stderr, verify_exit_status = shell.execute_powershell(verify_cmd, verbose=verbose)
+            break
+        except Exception:
+            time.sleep(10)
 
     if 'Installed' not in str(verify_stdout):
+        print(f"adcs_stdout = {adcs_stdout}")
+        print(f"adcs_stderr = {adcs_stderr}")
         print(f"verify_stdout = {verify_stdout}")
         raise RuntimeError("Could not verify Subordinate AD CS installation completed.")
     print("  Verified SubordinateCA was setup properly")
@@ -1070,6 +1163,58 @@ def setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, lead
     }
 
 
+def _wait_for_root_pki_ready(root_shell, template_name="SubCA", timeout_sec=300, poll_sec=15):
+    """
+    Wait until the Enterprise Root CA can see its AD CS PKI objects
+    and the specified template name, or raise RuntimeError on timeout.
+    """
+    import time
+
+    deadline = time.time() + timeout_sec
+    attempt = 0
+
+    while time.time() < deadline:
+        attempt += 1
+        print(f"  [rootca-pki-check] Attempt {attempt}: verifying CA and template '{template_name}'...")
+
+        # 1) Check CAInfo
+        ca_cmd = "certutil -CAInfo"
+        ca_out, ca_err, ca_status = root_shell.execute_powershell(
+            ca_cmd, verbose=verbose
+        )
+
+        if ca_status != 0:
+            print(f"    certutil -CAInfo not ready yet (exit={ca_status})")
+            time.sleep(poll_sec)
+            continue
+
+        # 2) Check templates list
+        tmpl_cmd = "certutil -catemplates"
+        tmpl_out, tmpl_err, tmpl_status = root_shell.execute_powershell(
+            tmpl_cmd, verbose=verbose
+        )
+
+        if tmpl_status != 0 or template_name.lower() not in str(tmpl_out).lower():
+            print(f"    Template '{template_name}' not visible yet (exit={tmpl_status})")
+            print(f"    [debug] catemplates_status={tmpl_status}")
+            print(f"    [debug] catemplates_out=\n{tmpl_out}")
+            print(f"    [debug] catemplates_err=\n{tmpl_err}")
+            time.sleep(poll_sec)
+            continue
+
+
+        print( "  [rootca-pki-check] Root CA PKI looks ready, with:")
+        print(f"    [debug] catemplates_status={tmpl_status}")
+        print(f"    [debug] catemplates_out=\n{tmpl_out}")
+        print(f"    [debug] catemplates_err=\n{tmpl_err}")
+        return
+
+    raise RuntimeError(
+        f"Root CA PKI did not become ready within {timeout_sec} seconds "
+        f"(template='{template_name}')."
+    )
+
+
 def link_subordinate_to_root(root_info, sub_info):
     """
     Links a subordinate CA to its root CA by signing the subordinate's request on the root CA
@@ -1082,8 +1227,6 @@ def link_subordinate_to_root(root_info, sub_info):
     Returns:
     - dict with stdout/stderr/exit_status from the final install step
     """
-
-    import os
 
     sub_node = sub_info['node']
     sub_name = sub_node['name']
@@ -1110,6 +1253,8 @@ def link_subordinate_to_root(root_info, sub_info):
     sub_shell = ShellHandler(sub_ip, admin_upn, root_password, retries=50)
     root_shell = ShellHandler(root_ip, admin_upn, root_password, retries=50)
 
+    _wait_for_root_pki_ready(root_shell, template_name="SubCA", timeout_sec=900, poll_sec=15)
+
     # Ensure C:\tmp exists on both systems
     sub_shell.execute_cmd("mkdir C:\\tmp", verbose=verbose)
     root_shell.execute_cmd("mkdir C:\\tmp", verbose=verbose)
@@ -1122,10 +1267,39 @@ def link_subordinate_to_root(root_info, sub_info):
 
     # Step 3: Submit request on root CA and save .cer
     sign_cmd = f"""
+$ErrorActionPreference = 'Stop'
 certreq -submit -q -f -attrib "CertificateTemplate:SubCA" "{remote_req}" "{remote_cer}"
 Restart-Service certsvc
 """
-    stdout, stderr, exit_status = root_shell.execute_powershell_multiline(sign_cmd, verbose=verbose, filename="sign_request.ps1")
+
+    max_sign_attempts = 5
+
+    for attempt in range(1, max_sign_attempts + 1):
+        print(f"  [subca-sign] Attempt {attempt}/{max_sign_attempts} to sign SubCA request on root CA...")
+        stdout, stderr, exit_status = root_shell.execute_powershell_multiline(
+            sign_cmd,
+            verbose=verbose,
+            filename=f"sign_request_attempt{attempt}.ps1"
+        )
+
+        # Detect success: exit code 0 and no "Certificate not issued" / "Denied"
+        txt = (str(stdout) + "\n" + str(stderr)).lower()
+        if exit_status == 0 and "certificate not issued" not in txt and "denied by policy module" not in txt:
+            print("  [subca-sign] certreq appears to have succeeded.")
+            break
+
+        if attempt < max_sign_attempts:
+            print(f"  [subca-sign] certreq did not succeed (exit={exit_status}), retrying in 30s...")
+            time.sleep(30)
+        else:
+            # Final failure
+            raise RuntimeError(
+                "Failed to sign SubCA request on root CA.\n"
+                f"exit_status={exit_status}\n"
+                f"stdout={stdout}\n"
+                f"stderr={stderr}\n"
+                "See sign_request_attempt*.ps1 on the root CA for full details."
+            )
 
     # Step 4: Fetch signed .cer
     root_shell.get_file(remote_cer, local_cer)
@@ -1140,6 +1314,72 @@ Restart-Service certsvc
 Set-PSDebug -Trace 1
 
 Import-Certificate -FilePath "C:\\tmp\\subca.cer" -CertStoreLocation Cert:\\LocalMachine\\CA
+
+# Wait until the SubCA cert chains to a trusted root (ignore revocation during bootstrap)
+function Wait-SubCAChainReady
+{
+    param(
+        [Parameter(Mandatory=$true)][string] $CertPath,
+        [int] $TimeoutSec = 300,
+        [int] $PollSec = 3
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    $sub = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($CertPath)
+
+    $chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+    # Ignore revocation while bootstrapping (we just care about PartialChain vs trusted root)
+    $chain.ChainPolicy.RevocationMode  = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+    $chain.ChainPolicy.RevocationFlag  = [System.Security.Cryptography.X509Certificates.X509RevocationFlag]::EntireChain
+    $chain.ChainPolicy.VerificationFlags = [System.Security.Cryptography.X509Certificates.X509VerificationFlags]::IgnoreWrongUsage
+
+    do
+    {
+        # Attempt chain build
+        $ok = $chain.Build($sub)
+
+        if ($ok)
+        {
+            # Chain now builds cleanly to a trusted root
+            return $true
+        }
+
+        # ------------------------------------------------------------------
+        # NEW: Hint Windows to refresh Enterprise Roots & CA chain data
+        # ------------------------------------------------------------------
+        try
+        {
+            # Refresh auto-enrolled certificates + enterprise trust lists
+            certutil -pulse | Out-Null
+        }
+        catch { }
+
+        try
+        {
+            # Refresh group-policy-delivered CA trust (without reboot)
+            gpupdate /target:computer /force | Out-Null
+        }
+        catch { }
+
+        # ------------------------------------------------------------------
+        # NEW: Backoff to avoid hammering DC/CA
+        # ------------------------------------------------------------------
+        Start-Sleep -Seconds $PollSec
+    }
+    while ((Get-Date) -lt $deadline)
+
+    Write-Error "Timed out waiting for the SubCA cert to chain to a trusted root (PartialChain persisted)."
+    return $false
+}
+
+# Usage:
+if (-not (Wait-SubCAChainReady -CertPath 'C:\\tmp\\subca.cer' -TimeoutSec 300))
+{
+    exit 1
+}
+
+
+
 Start-Service -Name netlogon, rpcss, eventlog
 certutil -urlfetch -verify C:\\tmp\\subca.cer
 

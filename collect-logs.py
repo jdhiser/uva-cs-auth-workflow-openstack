@@ -24,11 +24,12 @@ import random
 import re
 import sys
 import time
+import importlib.util
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from impact import run_impact
 
-import importlib.util
 
 # ------------------------------ dynamic import ------------------------------
 emu_spec = importlib.util.spec_from_file_location("emulate_logins", Path("emulate-logins.py"))
@@ -37,22 +38,221 @@ if emu_spec is None or emu_spec.loader is None:
 emulate_logins = importlib.util.module_from_spec(emu_spec)
 emu_spec.loader.exec_module(emulate_logins)
 
-
 GLOBAL_META_FOR_STEPS: Dict[str, Any] | None = None
 
+
 # --------------------------------- helpers -----------------------------------
-"""
-Function: load_json
-Inputs:
-    (see function signature)
-Returns:
-    (see description)
-Description:
-    Load a JSON file into a dict with error handling.
-"""
+def run_workflow_step(
+    idx: int,
+    user_opt: Optional[str],
+    host_opt: Optional[str],
+    wname: str,
+    users_cache: list,
+    by_name: dict,
+    nodes: list,
+    pd: dict,
+    ent_by_name: dict,
+    leaders: dict,
+    outdir: Path,
+    local_verbose: bool,
+    remote_verbose: bool,
+    max_workers: int,
+) -> None:
+    """
+    Execute a single workflow step (the logic formerly inline in main()).
+    Handles user/host resolution, metadata emission, emulate-login, and log collection.
+    """
+
+    # ---- host resolution ----
+    if host_opt:
+        target_name = host_opt
+        host_sel = "specified"
+    else:
+        names = list(by_name.keys())
+        if not names:
+            raise SystemExit("No hosts available to choose at random.")
+        target_name = random.choice(names)
+        host_sel = "random"
+
+    # ---- user resolution ----
+    if user_opt:
+        username = user_opt
+        user_sel = "specified"
+        chosen_user_doc = next(
+            (u for u in users_cache
+             if (u.get("user_profile", {}) or {}).get("username") == username),
+            {},
+        )
+    else:
+        def _has_wf(u: dict) -> bool:
+            prof = (u.get("login_profile") or {})
+            return (wname in (prof.get("workflows") or []))
+
+        candidates = [u for u in users_cache if _has_wf(u)] or users_cache
+        chosen_user_doc = random.choice(candidates)
+        username = chosen_user_doc.get("user_profile", {}).get("username")
+        if not username:
+            raise SystemExit("Random workflow user selection yielded missing username.")
+        user_sel = "random"
+
+    print(
+        f"[{idx:02d}] emulate-login: workflow={wname} user={username} ({user_sel}) "
+        f"host={target_name} ({host_sel})",
+        flush=True,
+    )
+
+    # ---- step directory + metadata ----
+    step_dirname = f"after-{idx:02d}-workflow-{wname}"
+    step_dir = outdir / "steps" / step_dirname
+    ensure_dir(step_dir)
+    logfile = str(step_dir / f"workflow.run{idx:02d}.ndjson")
+
+    wf_meta = {
+        "workflow": wname,
+        "index": idx,
+        "requested_user": user_opt,
+        "requested_host": host_opt,
+        "selected_user": username,
+        "selected_host": target_name,
+        "user_selection": user_sel,
+        "host_selection": host_sel,
+        "logins_path": None,   # filled by caller if desired
+        "seed": (int(time.time()) & 0xFFFFFFFF),
+        "ts": datetime.now().isoformat(timespec="seconds"),
+    }
+    (step_dir / "workflow.meta.json").write_text(
+        json.dumps(wf_meta, indent=2),
+        encoding="utf-8",
+    )
+
+    print(f"[{idx:02d}] BEGIN WORKFLOW {wname}", flush=True)
+
+    # ---- build one login record ----
+    login_length = 1
+    login_start_dt = datetime.now()
+    login_end_dt = login_start_dt + timedelta(seconds=login_length)
+
+    login = {
+        "user": username,
+        "from": {"ip": "10.255.255.250"},
+        "to": {"node": target_name},
+        "login_start": login_start_dt.strftime("%Y-%m-%d %H:%M:%S.%f"),
+        "login_end": login_end_dt.strftime("%Y-%m-%d %H:%M:%S.%f"),
+        "login_length": login_length,
+        "workflows": [wname],
+        "selection": {"user": user_sel, "host": host_sel},
+    }
+
+    # ---- execute workflow ----
+    emulate_logins.emulate_login(
+        number=1,
+        login=login,
+        user_data=users_cache,
+        built=pd.get("enterprise_built", {}),
+        seed=wf_meta["seed"],
+        logfile=logfile,
+        workflows_override=[wname],
+    )
+
+    print(f"[{idx:02d}] END   WORKFLOW {wname}", flush=True)
+
+    # ---- collect after-logs ----
+    collect_logs_parallel(
+        nodes,
+        ent_by_name,
+        leaders,
+        outdir,
+        local_verbose,
+        remote_verbose,
+        max_workers,
+        step_dirname=step_dirname,
+        label=f"after workflow {wname}",
+        idxnum=idx,
+        is_baseline=False,
+    )
+
+
+def run_impact_step(
+    idx: int,
+    raw_token: str,
+    pd: dict,
+    nodes: list,
+    by_name: dict,
+    ent_by_name: dict,
+    leaders: dict,
+    outdir: Path,
+    local_verbose: bool,
+    remote_verbose: bool,
+    max_workers: int,
+) -> None:
+    """
+    Execute a single impact in the syntax NODE=TYPE.
+    Delegates actual execution to impact.py's run_impact().
+    """
+
+    if "=" not in raw_token:
+        raise SystemExit(
+            f"--impact must be NODE=TYPE, e.g. dc1=availability (got '{raw_token}')"
+        )
+
+    node_name, impact_type = raw_token.split("=", 1)
+    node_name = node_name.strip()
+    impact_type = impact_type.strip().lower()
+
+    print(f"[{idx:02d}] BEGIN IMPACT {node_name}={impact_type}", flush=True)
+
+    # Call impact.py’s logic
+    # run_impact(impact_type, node_name, enterprise_dict)
+    result = run_impact(impact_type, node_name, pd)
+
+    # Write result JSON
+    step_dirname = f"impact-{node_name}-{impact_type}-run{idx:02d}"
+    step_dir = outdir / "steps" / step_dirname
+    ensure_dir(step_dir)
+
+    out_json = {
+        "impact": {
+            "raw": raw_token,
+            "node": node_name,
+            "type": impact_type,
+            "index": idx,
+        },
+        "result": result,
+    }
+
+    (step_dir / f"impact.run{idx:02d}.json").write_text(
+        json.dumps(out_json, indent=2),
+        encoding="utf-8",
+    )
+
+    print(f"[{idx:02d}] END   IMPACT {node_name}={impact_type}", flush=True)
+
+    # After-impact log collection
+    collect_logs_parallel(
+        nodes,
+        ent_by_name,
+        leaders,
+        outdir,
+        local_verbose,
+        remote_verbose,
+        max_workers,
+        step_dirname=f"after-{idx:02d}-impact-{node_name}-{impact_type}",
+        label=f"after impact {node_name}={impact_type}",
+        idxnum=idx,
+        is_baseline=False,
+    )
 
 
 def load_json(p: str) -> dict:
+    """
+    Function: load_json
+    Inputs:
+        (see function signature)
+    Returns:
+        (see description)
+    Description:
+        Load a JSON file into a dict with error handling.
+    """
     try:
         return json.loads(Path(p).read_text(encoding="utf-8"))
     except Exception as e:
@@ -60,33 +260,29 @@ def load_json(p: str) -> dict:
         return {}
 
 
-"""
-Function: ensure_dir
-Inputs:
-    (see function signature)
-Returns:
-    (see description)
-Description:
-    Create directory path recursively if missing.
-"""
-
-
 def ensure_dir(p: Path):
+    """
+    Function: ensure_dir
+    Inputs:
+        (see function signature)
+    Returns:
+        (see description)
+    Description:
+        Create directory path recursively if missing.
+    """
     p.mkdir(parents=True, exist_ok=True)
 
 
-"""
-Function: pd_nodes
-Inputs:
-    (see function signature)
-Returns:
-    (see description)
-Description:
-    Extract nodes list from post-deploy JSON across known layouts.
-"""
-
-
 def pd_nodes(pd: dict) -> list:
+    """
+    Function: pd_nodes
+    Inputs:
+        (see function signature)
+    Returns:
+        (see description)
+    Description:
+        Extract nodes list from post-deploy JSON across known layouts.
+    """
     for path in [
         ("enterprise_built", "deployed", "nodes"),
         ("deployed", "nodes"),
@@ -105,18 +301,16 @@ def pd_nodes(pd: dict) -> list:
     return []
 
 
-"""
-Function: pd_leaders
-Inputs:
-    (see function signature)
-Returns:
-    (see description)
-Description:
-    Extract domain leaders mapping from enterprise JSON across known layouts.
-"""
-
-
 def pd_leaders(pd: dict) -> dict:
+    """
+    Function: pd_leaders
+    Inputs:
+        (see function signature)
+    Returns:
+        (see description)
+    Description:
+        Extract domain leaders mapping from enterprise JSON across known layouts.
+    """
     for path in [
         ("enterprise_built", "setup", "setup_domains", "domain_leaders"),
         ("setup", "setup_domains", "domain_leaders"),
@@ -134,36 +328,32 @@ def pd_leaders(pd: dict) -> dict:
     return {}
 
 
-"""
-Function: rec_domain
-Inputs:
-    (see function signature)
-Returns:
-    (see description)
-Description:
-    Extract domain/forest string from a node record.
-"""
-
-
 def rec_domain(rec) -> Optional[str]:
+    """
+    Function: rec_domain
+    Inputs:
+        (see function signature)
+    Returns:
+        (see description)
+    Description:
+        Extract domain/forest string from a node record.
+    """
     if not isinstance(rec, dict):
         return None
     ed = rec.get("enterprise_description") or {}
     return ed.get("domain") or rec.get("domain") or ed.get("forest")
 
 
-"""
-Function: leader_pass
-Inputs:
-    (see function signature)
-Returns:
-    (see description)
-Description:
-    Find administrator/leader password from leaders mapping for a domain.
-"""
-
-
 def leader_pass(leaders: dict, dom: Optional[str]) -> Optional[str]:
+    """
+    Function: leader_pass
+    Inputs:
+        (see function signature)
+    Returns:
+        (see description)
+    Description:
+        Find administrator/leader password from leaders mapping for a domain.
+    """
     if not dom:
         return None
     info = leaders.get(dom) or {}
@@ -173,24 +363,20 @@ def leader_pass(leaders: dict, dom: Optional[str]) -> Optional[str]:
     return None
 
 
-"""
-Function: os_hint_of
-Inputs:
-    n: dict - Node record from post-deploy JSON (enterprise_built.deployed.nodes)
-Returns:
-    str - 'windows' or 'linux'
-Description:
-    Determine OS type based on the node's roles. If any role contains
-    the word "windows", return "windows"; otherwise return "linux".
-"""
-
-
 def os_hint_of(n: dict) -> str:
     """
-    Determine OS type from post-deploy node dict.
+    Function: os_hint_of
+    Inputs:
+        n: dict - Node record from post-deploy JSON (enterprise_built.deployed.nodes)
+    Returns:
+        str - 'windows' or 'linux'
+    Description:
+        Determine OS type based on the node's roles. If any role contains
+        the word "windows", return "windows"; otherwise return "linux".
+        Determine OS type from post-deploy node dict.
 
-    Rule: if the node's role list (from enterprise_description.roles)
-    contains "windows", return "windows"; else "linux".
+        Rule: if the node's role list (from enterprise_description.roles)
+        contains "windows", return "windows"; else "linux".
     """
     roles = (n.get("enterprise_description") or {}).get("roles", [])
     if any(isinstance(r, str) and "windows" in r.lower() for r in roles):
@@ -201,18 +387,17 @@ def os_hint_of(n: dict) -> str:
 _IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
 
-"""
-Function: _extract_ipv4_from_value
-Inputs:
-    (see function signature)
-Returns:
-    (see description)
-Description:
-    Extract an IPv4 address from a string.
-"""
-
-
 def _extract_ipv4_from_value(v: Any) -> Optional[str]:
+    """
+    Function: _extract_ipv4_from_value
+    Inputs:
+        (see function signature)
+    Returns:
+        (see description)
+    Description:
+        Extract an IPv4 address from a string.
+    """
+
     if isinstance(v, str):
         m = _IP_RE.search(v)
         if m:
@@ -220,18 +405,16 @@ def _extract_ipv4_from_value(v: Any) -> Optional[str]:
     return None
 
 
-"""
-Function: ip_of
-Inputs:
-    (see function signature)
-Returns:
-    (see description)
-Description:
-    Attempt to locate a node's IP by scanning common keys and nested structures.
-"""
-
-
 def ip_of(n: dict) -> Optional[str]:
+    """
+    Function: ip_of
+    Inputs:
+        (see function signature)
+    Returns:
+        (see description)
+    Description:
+        Attempt to locate a node's IP by scanning common keys and nested structures.
+    """
     for k in (
         "control_ipv4_addr",
         "control_addr",
@@ -275,18 +458,16 @@ def ip_of(n: dict) -> Optional[str]:
     return scan(n)
 
 
-"""
-Function: _fp
-Inputs:
-    (see function signature)
-Returns:
-    (see description)
-Description:
-    Fingerprint a secret for logging without revealing it.
-"""
-
-
 def _fp(secret) -> str:
+    """
+    Function: _fp
+    Inputs:
+        (see function signature)
+    Returns:
+        (see description)
+    Description:
+        Fingerprint a secret for logging without revealing it.
+    """
     if not secret:
         return "len=0 sha256=--------"
     import hashlib as _h
@@ -294,24 +475,20 @@ def _fp(secret) -> str:
 
 
 # --------------------------- action parsing (NEW) ----------------------------
-"""
-Function: parse_workflow_token
-Inputs:
-    (see function signature)
-Returns:
-    (see description)
-Description:
-    Parse [[user@]host=]name tokens for workflows.
-"""
-
 
 def parse_workflow_token(token: str) -> Tuple[Optional[str], Optional[str], str]:
     """
-    Parse a single --workflow token in the format [[user@]host=]name.
+    Function: parse_workflow_token
+    Inputs:
+        (see function signature)
+    Returns:
+        (see description)
+    Description:
+        Parse a single --workflow token in the format [[user@]host=]name.
 
-    Enhanced to handle usernames that contain '@' (e.g., pclark@castle@win10-fin=workflow1):
-    - We now split on the LAST '@' before '=', not the first.
-    Returns (user_or_None, host_or_None, name).
+        Enhanced to handle usernames that contain '@' (e.g., pclark@castle@win10-fin=workflow1):
+        - We now split on the LAST '@' before '=', not the first.
+        Returns (user_or_None, host_or_None, name).
     """
     token = token.strip()
     if "=" not in token:
@@ -332,24 +509,20 @@ def parse_workflow_token(token: str) -> Tuple[Optional[str], Optional[str], str]
     return (user, host, name)
 
 
-"""
-Function: parse_action_queue
-Inputs:
-    (see function signature)
-Returns:
-    (see description)
-Description:
-    Build ordered (kind, payload) tuples from argv for workflows and impacts.
-"""
-
-
 def parse_action_queue(argv: List[str]) -> List[Tuple[str, Tuple[Optional[str], Optional[str], str]]]:
     """
-    Extract an ordered queue of actions from argv with preserved ordering.
-    Supports:
-      --workflow [[user@]host=]name     (repeatable)
-      --impact   name                   (repeatable)
-    Returns: List of (kind, (user_or_None, host_or_None, name))
+    Function: parse_action_queue
+    Inputs:
+        (see function signature)
+    Returns:
+        (see description)
+    Description:
+        Build ordered (kind, payload) tuples from argv for workflows and impacts.
+        Extract an ordered queue of actions from argv with preserved ordering.
+        Supports:
+          --workflow [[user@]host=]name     (repeatable)
+          --impact   name                   (repeatable)
+        Returns: List of (kind, (user_or_None, host_or_None, name))
     """
     actions: List[Tuple[str, Tuple[Optional[str], Optional[str], str]]] = []
     i = 0
@@ -373,21 +546,17 @@ def parse_action_queue(argv: List[str]) -> List[Tuple[str, Tuple[Optional[str], 
 
 
 # ----------------------------- auth & collectors -----------------------------
-"""
-Function: _auth_plan
-Inputs:
-    (see function signature)
-Returns:
-    (see description)
-Description:
-    Decide credentials to connect to a node based on OS and domain.
-"""
-
-
 def _auth_plan(n: dict, ent_by_name: dict, leaders: dict, verbose: bool):
     """
-    Build the auth plan for a node based on its OS and domain.
-    Returns (name, host_ip, os_hint, user, password)
+    Function: _auth_plan
+    Inputs:
+        (see function signature)
+    Returns:
+        (see description)
+    Description:
+        Decide credentials to connect to a node based on OS and domain.
+        Build the auth plan for a node based on its OS and domain.
+        Returns (name, host_ip, os_hint, user, password)
     """
     name = n.get("name") or n.get("hostname") or "unknown"
     host_ip = ip_of(n)
@@ -411,18 +580,16 @@ def _auth_plan(n: dict, ent_by_name: dict, leaders: dict, verbose: bool):
     return name, host_ip, osl, user, pw_final
 
 
-"""
-Function: _download
-Inputs:
-    (see function signature)
-Returns:
-    (see description)
-Description:
-    Fetch a remote file to a local path via ShellHandler.
-"""
-
-
 def _download(h, remote_path: str, local_path: Path, verbose: bool):
+    """
+    Function: _download
+    Inputs:
+        (see function signature)
+    Returns:
+        (see description)
+    Description:
+        Fetch a remote file to a local path via ShellHandler.
+    """
     ensure_dir(local_path.parent)
     try:
         h.get_file(remote_path, str(local_path), verbose=verbose)
@@ -430,18 +597,16 @@ def _download(h, remote_path: str, local_path: Path, verbose: bool):
         h.get_file(remote_path, str(local_path))
 
 
-"""
-Function: _collect_linux
-Inputs:
-    (see function signature)
-Returns:
-    (see description)
-Description:
-    Collect Linux logs and system metadata into a remote tar.gz.
-"""
-
-
 def _collect_linux(remote_path: str, h, remote_verbose: bool) -> int:
+    """
+    Function: _collect_linux
+    Inputs:
+        (see function signature)
+    Returns:
+        (see description)
+    Description:
+        Collect Linux logs and system metadata into a remote tar.gz.
+    """
     bash_script = r"""
 set -euo pipefail
 shopt -s globstar nullglob
@@ -465,20 +630,11 @@ fi
     return code
 
 
-"""
-Function: _collect_windows
-Inputs:
-    (see function signature)
-Returns:
-    (see description)
-Description:
-    Collect Windows EVTX snapshots and XML, copy selected trees, then zip.
-"""
-
-
 def _collect_windows(remote_zip: str, name: str, h, remote_verbose: bool) -> int:
     """
     Function: _collect_windows
+    Description:
+        Collect Windows EVTX snapshots and XML, copy selected trees, then zip.
     Inputs:
         - remote_zip: Destination path for the archive on the remote Windows host (e.g., C:\tmp\logs-<node>.zip)
         - name: Node name used for staging directory naming
@@ -545,17 +701,6 @@ Compress-Archive -Path (Join-Path $Stage '*') -DestinationPath $ZipPath -Force -
     return code
 
 
-"""
-Function: _node_collect
-Inputs:
-    (see function signature)
-Returns:
-    (see description)
-Description:
-    Collect logs for one node and download the resulting archive locally.
-"""
-
-
 def _node_collect(
     n: dict,
     ent_by_name: dict,
@@ -566,6 +711,15 @@ def _node_collect(
     idxnum: int,
     is_baseline: bool,
 ):
+    """
+    Function: _node_collect
+    Inputs:
+        (see function signature)
+    Returns:
+        (see description)
+    Description:
+        Collect logs for one node and download the resulting archive locally.
+    """
     name, host_ip, osl, user, pw_final = _auth_plan(n, ent_by_name, leaders, local_verbose)
 
     if not host_ip:
@@ -597,17 +751,6 @@ def _node_collect(
         return name, False, msg
 
 
-"""
-Function: collect_logs_parallel
-Inputs:
-    (see function signature)
-Returns:
-    (see description)
-Description:
-    Run per-node collections in parallel and write step metadata.
-"""
-
-
 def collect_logs_parallel(
     nodes: list,
     ent_by_name: dict,
@@ -621,6 +764,15 @@ def collect_logs_parallel(
     idxnum: int,
     is_baseline: bool,
 ):
+    """
+    Function: collect_logs_parallel
+    Inputs:
+        (see function signature)
+    Returns:
+        (see description)
+    Description:
+        Run per-node collections in parallel and write step metadata.
+    """
     t0 = time.time()
     tag = f"{idxnum:02d}" if not is_baseline else "00"
     print(f"[{tag}] BEGIN LOGS {label}", flush=True)
@@ -649,18 +801,16 @@ def collect_logs_parallel(
 
 
 # ----------------------------------- main ------------------------------------
-"""
-Function: main
-Inputs:
-    (see function signature)
-Returns:
-    (see description)
-Description:
-    CLI entrypoint to run baseline and queued actions.
-"""
-
-
 def main() -> int:
+    """
+    Function: main
+    Inputs:
+        (see function signature)
+    Returns:
+        (see description)
+    Description:
+        CLI entrypoint to run baseline and queued actions.
+    """
     ap = argparse.ArgumentParser()
     ap.add_argument("-p", "--post-deploy", dest="post_deploy", required=True)
     ap.add_argument("--enterprise-json", dest="enterprise_json", required=False)
@@ -677,7 +827,17 @@ def main() -> int:
         default=None,
         help="Path to logins.json (REQUIRED if any --workflow is provided)",
     )
-    ap.add_argument("--impact", dest="impact", action="append", help="Queue an impact in order: --impact NAME (repeatable)")
+    ap.add_argument(
+        "--impact",
+        dest="impact",
+        action="append",
+        help=(
+            "Queue an impact in order (repeatable). "
+            "Format: --impact NODE=TYPE   e.g.  dc1=availability\n"
+            "Where NODE is the node name in post-deploy.json, and TYPE is one of the supported impact types."
+        ),
+    )
+
     ap.add_argument("-o", "--output", dest="output", default="out")
     ap.add_argument(
         "-v",
@@ -764,7 +924,7 @@ def main() -> int:
                     if host_opt not in by_name:
                         raise SystemExit(f"Host '{host_opt}' not found in post-deploy for workflow '{wname}'.")
 
-        # ---------------- Always run baseline first ----------------
+    # ---------------- Always run baseline first ----------------
     collect_logs_parallel(
         nodes,
         ent_by_name,
@@ -788,127 +948,36 @@ def main() -> int:
     for idx, (kind, val) in enumerate(argv_actions, start=1):
         if kind == "workflow":
             user_opt, host_opt, wname = val
-
-            # Resolve host
-            if host_opt:
-                target_name = host_opt  # already validated above
-                host_sel = "specified"
-            else:
-                names = list(by_name.keys())
-                if not names:
-                    raise SystemExit("No hosts available to choose at random.")
-                target_name = random.choice(names)
-                host_sel = "random"
-
-            # Resolve user
-            if user_opt:
-                username = user_opt
-                user_sel = "specified"
-                chosen_user_doc = next((u for u in users_cache if (u.get("user_profile", {}) or {}).get("username") == username), {})
-            else:
-                # Prefer users that declare this workflow; else any
-                def _has_wf(u: dict) -> bool:
-                    prof = (u.get("login_profile") or {})
-                    return (wname in (prof.get("workflows") or []))
-                candidates = [u for u in users_cache if _has_wf(u)] or users_cache
-                chosen_user_doc = random.choice(candidates)
-                username = chosen_user_doc.get("user_profile", {}).get("username")
-                if not username:
-                    raise SystemExit("Randomly selected user lacks user_profile.username in --logins.")
-                user_sel = "random"
-
-            # Make selection visible in logs (always)
-            print(f"[{idx:02d}] emulate-login: workflow={wname} user={username} ({user_sel}) host={target_name} ({host_sel})", flush=True)
-
-            # Prepare step dir and metadata
-            step_dirname = f"after-{idx:02d}-workflow-{wname}"
-            step_dir = outdir / "steps" / step_dirname
-            ensure_dir(step_dir)
-            logfile = str(step_dir / f"workflow.run{idx:02d}.ndjson")
-
-            wf_meta = {
-                "workflow": wname,
-                "index": idx,
-                "requested_user": user_opt,
-                "requested_host": host_opt,
-                "selected_user": username,
-                "selected_host": target_name,
-                "user_selection": user_sel,
-                "host_selection": host_sel,
-                "logins_path": args.logins,
-                "seed": (int(time.time()) & 0xFFFFFFFF),
-                "ts": datetime.now().isoformat(timespec="seconds"),
-            }
-            (step_dir / "workflow.meta.json").write_text(json.dumps(wf_meta, indent=2), encoding="utf-8")
-
-            print(f"[{idx:02d}] BEGIN WORKFLOW {wname}", flush=True)
-
-            # Build one login record
-            login_length = 1
-            login_start_dt = datetime.now()
-            login_end_dt = login_start_dt + timedelta(seconds=login_length)
-
-            login = {
-                "user": username,
-                "from": {"ip": "10.255.255.250"},
-                "to": {"node": target_name},
-                "login_start": login_start_dt.strftime("%Y-%m-%d %H:%M:%S.%f"),
-                "login_end": login_end_dt.strftime("%Y-%m-%d %H:%M:%S.%f"),
-                "login_length": login_length,
-                "workflows": [wname],
-                "selection": {"user": user_sel, "host": host_sel},
-            }
-
-            # Run emulated login (seed from wf_meta to also persist it)
-            emulate_logins.emulate_login(
-                number=1,
-                login=login,
-                user_data=users_cache,
-                built=pd.get("enterprise_built", {}),
-                seed=wf_meta["seed"],
-                logfile=logfile,
-                workflows_override=[wname],
-            )
-
-            print(f"[{idx:02d}] END   WORKFLOW {wname}", flush=True)
-
-            # Collect after logs
-            collect_logs_parallel(
+            run_workflow_step(
+                idx,
+                user_opt,
+                host_opt,
+                wname,
+                users_cache,
+                by_name,
                 nodes,
+                pd,
                 ent_by_name,
                 leaders,
                 outdir,
                 local_verbose,
                 remote_verbose,
                 args.max_workers,
-                step_dirname=step_dirname,
-                label=f"after workflow {wname}",
-                idxnum=idx,
-                is_baseline=False,
             )
-
         elif kind == "impact":
-            _, _, iname = val
-            print(f"[{idx:02d}] BEGIN IMPACT {iname}", flush=True)
-            step_dir = outdir / "steps" / f"impact-{iname}-run{idx:02d}"
-            ensure_dir(step_dir)
-            (step_dir / f"impact.run{idx:02d}.json").write_text(
-                json.dumps({"result": "stubbed", "impact": iname, "index": idx}, indent=2),
-                encoding="utf-8",
-            )
-            print(f"[{idx:02d}] END   IMPACT {iname} (0.1s)", flush=True)
-            collect_logs_parallel(
-                nodes,
-                ent_by_name,
-                leaders,
-                outdir,
-                local_verbose,
-                remote_verbose,
-                args.max_workers,
-                step_dirname=f"after-{idx:02d}-impact-{iname}",
-                label=f"after impact {iname}",
-                idxnum=idx,
-                is_baseline=False,
+            raw_token = val[2]   # "dc1=availability"
+            run_impact_step(
+                idx=idx,
+                raw_token=raw_token,
+                pd=pd,
+                nodes=nodes,
+                by_name=by_name,
+                ent_by_name=ent_by_name,
+                leaders=leaders,
+                outdir=outdir,
+                local_verbose=local_verbose,
+                remote_verbose=remote_verbose,
+                max_workers=args.max_workers,
             )
 
     print("All steps complete.", flush=True)

@@ -4,8 +4,8 @@ set -Eeuo pipefail
 
 # config parameters
 WORKFLOWS=(browse_iis moodle)
-#IMPACTS=(none confidentiality availability integrity)
-IMPACTS=(none)
+IMPACTS=(none confidentiality availability integrity)
+#IMPACTS=(none )
 SEEDS=(1 2)
 CLOUD_CONFIG="cloud-configs/axes-proj1-ubuntu.json"
 ENTERPRISE_CONFIG="enterprise-configs/cyberfortress-enterprise-full.json"
@@ -27,6 +27,12 @@ do_workflow()
 	local seed="$5"
 
 	local outpath="$OUTPATH_BASE/workflow=$workflow.impact=$impact.impact_node=$impact_node.workflow_node=$workflow_node.seed=$seed"
+
+	if [[ -d $outpath ]]
+	then
+		echo "Skipping write of $outpath as it already exists"
+		return
+	fi
 
 	./cleanup-nodes.py "$DEPLOY_OUTPUT" || true
 	sleep 1m # time for cleanup to finish

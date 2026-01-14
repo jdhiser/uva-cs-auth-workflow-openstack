@@ -461,8 +461,12 @@ def main():
         print("Enterprise setup.  Writing output to post-deploy-output.json.  Run simulate-logins.py next.")
 
     except Exception as _:   # noqa: F841
+        sys.stdout.flush()
+        sys.stderr.flush()
         traceback.print_exc()
         print("Exception occured while setting up enterprise.  Dumping results to post-deploy-output.json anyhow.")
+        sys.stdout.flush()
+        sys.stderr.flush()
         return 1
 
     with open("post-deploy-output.json", "w") as f:
