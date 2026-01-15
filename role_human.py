@@ -25,12 +25,12 @@ def node_to_default_user(node):
 def install_human_windows(node, user, control_ipv4_addr, password, cloud_config):
     """
     Install minimal dependencies to run the MITRE Caldera 'human' plugin on Windows
-    using the embedded Python at C:\python (installed by join_domain_windows).
+    using the embedded Python at C:\\python (installed by join_domain_windows).
 
     Steps:
-      1) Ensure C:\python exists and enable 'import site' and '.' in pythonXY._pth
+      1) Ensure C:\\python exists and enable 'import site' and '.' in pythonXY._pth
       2) Upload the human plugin zip to the target host with ShellHandler.put_file
-      3) Download and run get-pip.py to install pip into C:\python\Scripts
+      3) Download and run get-pip.py to install pip into C:\\python\\Scripts
       4) Upgrade pip/setuptools/wheel
       5) Expand the uploaded zip and install dependencies from its requirements.txt
 
@@ -45,6 +45,10 @@ def install_human_windows(node, user, control_ipv4_addr, password, cloud_config)
     # Remote path where we'll upload the zip on the Windows host
     remote_zip_path = r"C:\\tmp\\human_plugin.zip"
 
+    # enterprise url and domain
+    enterprise_url = cloud_config['enterprise_url']
+    domain = node['domain']
+
     # Compose a resilient PowerShell script. It can be re-run safely.
     ps = f'''
 $ErrorActionPreference = "Stop"
@@ -56,6 +60,9 @@ $GetPip    = "C:\\tmp\\get-pip.py"
 $PluginZip = "{remote_zip_path}"
 $HumanRoot = "C:\\human"
 $ScriptsDir = Join-Path $PythonDir "Scripts"
+$EnterpriseUrl = "{enterprise_url}"
+$Domain        = "{domain}"
+
 
 # Ensure C:\\tmp exists
 if (-not (Test-Path -LiteralPath "C:\\tmp"))
@@ -128,14 +135,14 @@ $orig = Get-Content -LiteralPath $pth.FullName -Raw
 $new  = $orig
 
 # Ensure a bare 'import site' line exists (uncomment or append)
-$new = ($new -replace "(?m)^\s*#\s*import\s+site\s*$","import site")
+$new = ($new -replace "(?m)^\\s*#\\s*import\\s+site\\s*$","import site")
 if ($new -notmatch "(?m)^import site$")
 {{
     $new = $new.TrimEnd() + "`r`nimport site`r`n"
 }}
 
 # Ensure a '.' line exists so the script directory is on sys.path
-if ($new -notmatch "(?m)^\.$")
+if ($new -notmatch "(?m)^\\.$")
 {{
     # Add '.' on its own line (append to be safe)
     $new = $new.TrimEnd() + "`r`n.`r`n"
@@ -158,6 +165,36 @@ New-Item -ItemType Directory -Force -Path $HumanRoot | Out-Null
 # Clean destination (but keep root folder) to allow re-runs
 Get-ChildItem -LiteralPath $HumanRoot -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 Expand-Archive -Path $PluginZip -DestinationPath $HumanRoot -Force
+
+# --- Rewrite workflow URLs (Linux sed equivalent) ---
+function Replace-InFiles([string]$Root, [string]$Pattern, [string]$Replacement)
+{{
+    $files = Get-ChildItem -LiteralPath $Root -Recurse -Filter "*.py" -File -ErrorAction SilentlyContinue
+
+    foreach ($f in $files)
+    {{
+        $s = Get-Content -LiteralPath $f.FullName -Raw
+        $t = $s -replace $Pattern, $Replacement
+
+        if ($t -ne $s)
+        {{
+            Set-Content -LiteralPath $f.FullName -Value $t -Encoding UTF8
+            Write-Host "[*] Rewrote: $($f.FullName)"
+        }}
+    }}
+}}
+
+# Workflows may be in C:\\human\\app\\workflows
+$WorkflowsRoot = Join-Path $HumanRoot "app\\workflows"
+if (-not (Test-Path -LiteralPath $WorkflowsRoot))
+{{
+    $WorkflowsRoot = $HumanRoot
+}}
+
+Replace-InFiles $WorkflowsRoot "castle\\.castle\\.os" "$Domain.$EnterpriseUrl"
+Replace-InFiles $WorkflowsRoot "castle\\.project1\\.os" "$Domain.$EnterpriseUrl"
+Replace-InFiles $WorkflowsRoot "castle\\.os" $EnterpriseUrl
+Replace-InFiles $WorkflowsRoot "project1\\.os" $EnterpriseUrl
 
 # Try to locate requirements.txt (top-level or nested). Use the first one found.
 $req = Get-ChildItem -LiteralPath $HumanRoot -Recurse -Filter requirements.txt -File -ErrorAction SilentlyContinue | Select-Object -First 1

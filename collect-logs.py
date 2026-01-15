@@ -636,7 +636,7 @@ def _collect_windows(remote_zip: str, name: str, h, remote_verbose: bool) -> int
     Description:
         Collect Windows EVTX snapshots and XML, copy selected trees, then zip.
     Inputs:
-        - remote_zip: Destination path for the archive on the remote Windows host (e.g., C:\tmp\logs-<node>.zip)
+        - remote_zip: Destination path for the archive on the remote Windows host (e.g., C:\\tmp\\logs-<node>.zip)
         - name: Node name used for staging directory naming
         - h: ShellHandler instance for remote execution and transfers
         - remote_verbose: Whether to enable verbose output from ShellHandler
@@ -664,8 +664,8 @@ Get-WinEvent -ListLog * | ForEach-Object {{
     $chan = $_.LogName
 
     # Replace illegal filename characters (including slash/backslash) and collapse whitespace
-    $san = $chan -replace '[\/:*?""<>|]', '_'
-    $san = $san -replace '\s+', '_'
+    $san = $chan -replace '[\\/:*?""<>|]', '_'
+    $san = $san -replace '\\s+', '_'
 
     $evtxPath = Join-Path $EvtxDir ($san + '.evtx')
 

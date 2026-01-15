@@ -90,10 +90,10 @@ def deploy_forest(cloud_config, name, control_ipv4_addr, game_ipv4_addr, passwor
         wget https://www.python.org/ftp/python/3.12.1/python-3.12.1-embed-amd64.zip -Outfile python.zip
         Expand-Archive -force .\\python.zip
         mv python c:\\
-        icacls \"c:\\python\" /grant:r \"users:(RX)\" /C
-        $oldpath = (Get-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager\Environment' -Name PATH).path
-        $newpath = \"$oldpath;C:\python\"
-        Set-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager\Environment' -Name PATH -Value $newpath
+        icacls "c:\\python" /grant:r "users:(RX)" /C
+        $oldpath = (Get-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Control\\Session Manager\\Environment' -Name PATH).path
+        $newpath = "$oldpath;C:\\python"
+        Set-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Control\\Session Manager\\Environment' -Name PATH -Value $newpath
         """)
 
     if verbose:
@@ -152,7 +152,7 @@ def deploy_forest(cloud_config, name, control_ipv4_addr, game_ipv4_addr, passwor
         ipconfig /flushdns
         ipconfig /registerdns
         dcdiag /fix  """
-                                           )
+    )
     shell = ShellHandler(control_ipv4_addr, user, password)
     stdout3, stderr3, exit_status3 = shell.execute_powershell_multiline(remove_control_network_from_dns_cmd, filename="fix-dns.ps1", verbose=verbose)
 
@@ -177,7 +177,7 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
 
     adcmd = """
         wget https://www.python.org/ftp/python/3.12.1/python-3.12.1-embed-amd64.zip -Outfile python.zip
-        Expand-Archive -force .\python.zip
+        Expand-Archive -force .\\python.zip
         mv python c:\\
         icacls "c:\\python" /grant:r "users:(RX)" /C
         reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\TimeProviders\\NtpServer /v Enabled /t REG_DWORD /d 1 /f
@@ -202,9 +202,9 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
         $secure=ConvertTo-SecureString -asplaintext -string '{}' -force
         sleep 60
         Install-ADDSDomainController -DomainName {} -SafeModeAdministratorPassword $secure -verbose -NoRebootOnCompletion:$true  -confirm:$false -credential $cred
-        $oldpath = (Get-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager\Environment' -Name PATH).path
+        $oldpath = (Get-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Control\\Session Manager\\Environment' -Name PATH).path
         $newpath = "$oldpath;C:\\python"
-        Set-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager\Environment' -Name PATH -Value $newpath
+        Set-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Control\\Session Manager\\Environment' -Name PATH -Value $newpath
     """.format(game_leader_ip, game_leader_ip, leader_admin_password, domain_name, domain_safe_mode_password, domain_name)
 
     stdout = []
@@ -572,7 +572,7 @@ sudo sed -i 's/KbdInteractiveAuthentication no/KbdInteractiveAuthentication yes/
 sudo rm /etc/ssh/sshd_config.d/60-cloudimg-settings.conf
 
 # setup DNS for domain join.
-sudo sed -i '/dhcp4: true/a \            nameservers:\\n                addresses: \[ {domain_ips_formated} \]' {netplan_config_path}
+sudo sed -i '/dhcp4: true/a \\            nameservers:\\n                addresses: \\[ {domain_ips_formated} \\]' {netplan_config_path}
 
 # gather output for sanity check.
 cat {netplan_config_path}
@@ -616,7 +616,7 @@ done
 
 # set up default realm to join domain
 sudo sed -i 's/default_realm = .*/default_realm = {enterprise_name.upper()}/' {krdb_config_path}
-sudo sed -i '/\\[libdefaults\\]/a \  rdns=false ' {krdb_config_path}
+sudo sed -i '/\\[libdefaults\\]/a \\  rdns=false ' {krdb_config_path}
 
 #  try repeatedly to join the domain.  need to do this in case the domain controller is still starting.
 count=1
@@ -834,7 +834,7 @@ def setup_root_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_deta
     print(f"  Installing Root AD CS for node {name}")
 
     # Construct the PowerShell command as a multiline string
-    adcs_cmd = gpupdate_str + f"""
+    adcs_cmd = gpupdate_str + rf"""
 
         Install-WindowsFeature AD-Domain-Services
         Get-ADDomain
@@ -1202,8 +1202,7 @@ def _wait_for_root_pki_ready(root_shell, template_name="SubCA", timeout_sec=300,
             time.sleep(poll_sec)
             continue
 
-
-        print( "  [rootca-pki-check] Root CA PKI looks ready, with:")
+        print("  [rootca-pki-check] Root CA PKI looks ready, with:")
         print(f"    [debug] catemplates_status={tmpl_status}")
         print(f"    [debug] catemplates_out=\n{tmpl_out}")
         print(f"    [debug] catemplates_err=\n{tmpl_err}")

@@ -3,15 +3,18 @@ from shell_handler import ShellHandler
 verbose = False
 
 
-def do_rename_adapter(control_ip: str, user: str, password: str, rename_ip: str, new_name: str, index: int):
+def do_rename_adapter(control_ip: str, user: str, password: str, rename_ip: str, new_name: str, metric: int):
 
     rename_cmd = f"""
         $ipAddr="{rename_ip}"
         $new_name="{new_name}"
-        $adapter = Get-NetIPAddress -IPAddress $ipAddr| Select-Object -ExpandProperty InterfaceAlias
-        Rename-NetAdapter -Name $adapter -NewName $new_name
-        Set-NetIPInterface -InterfaceAlias "control-adapter" -InterfaceMetric {index}
-        write-output "It worked!"
+        $metric={metric}
+        $adapter = Get-NetIPAddress  -AddressFamily IPv4 -IPAddress $ipAddr| Select-Object -ExpandProperty InterfaceAlias
+        Rename-NetAdapter -Name $adapter -NewName $new_name 
+        Set-NetIPInterface -InterfaceAlias $new_name -AddressFamily IPv4 -AutomaticMetric Disabled -InterfaceMetric $metric
+        Get-NetIPInterface |
+            Sort-Object InterfaceMetric |
+            Format-Table InterfaceAlias, InterfaceIndex, AddressFamily, InterfaceMetric
         """
 
     try:
@@ -30,10 +33,10 @@ def register_windows_instance(obj):
     password = obj['password']
     user = 'Administrator'
 
-    game_rename = do_rename_adapter(control_ipv4_addr, user, password, game_ipv4_addr, "game-adapter", 50)
+    game_rename = do_rename_adapter(control_ipv4_addr, user, password, game_ipv4_addr, "game-adapter", 10)
     control_rename = ""
     if not game_ipv4_addr == control_ipv4_addr:
-        control_rename = do_rename_adapter(control_ipv4_addr, user, password, control_ipv4_addr, "control-adapter", 10)
+        control_rename = do_rename_adapter(control_ipv4_addr, user, password, control_ipv4_addr, "control-adapter", 50)
 
     cmd = (
         'slmgr.vbs /skms uvakms.eservices.virginia.edu; Start-Sleep -s 15; slmgr.vbs /ato; start-sleep -s 45; ' +
@@ -42,7 +45,7 @@ def register_windows_instance(obj):
     )
 
     try:
-        shell = ShellHandler(control_ipv4_addr, user, password, verbose=verbose, retries=1)
+        shell = ShellHandler(control_ipv4_addr, user, password, verbose=verbose, retries=3)
         stdout, stderr, exit_status = shell.execute_powershell(cmd)
     except Exception:
         print("Could not connect with credentials to register windows, already domain-joined?")

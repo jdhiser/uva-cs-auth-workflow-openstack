@@ -132,7 +132,6 @@ class OpenstackCloud:
 
         return self.cloud_config['instance_size_map'].get(size_name, size_name)
 
-
     def find_image_by_name(self, name):
         images = self.glclient.images.list()
         found_image = None
@@ -357,37 +356,45 @@ class OpenstackCloud:
         return ret
 
     def wait_for_ready(self, ret):
+        """
+        Wait up to 10 minutes for all nodes to reach ACTIVE.
+        Returns ret even if timeout is reached.
+        """
+
         waiting = True
         while waiting:
-            try:
-                print("Waiting for instances to be ready. Sleeping 5 seconds...")
-                time.sleep(30)
-                waiting = False
-                for node in ret['nodes']:
-                    id_value = node['id']
-                    if not node['is_ready']:
-                        nova_instance = self.nova_sess.servers.get(id_value)
-                        node['nova_status'] = nova_instance.status
-                        if nova_instance.status == 'ACTIVE':
-                            print("Node " + node['name'] + " is ready!")
-                            node['is_ready'] = True
-                        elif nova_instance.status == 'BUILD':
-                            waiting = True
-                        else:
-                            errstr = (
-                                f"Node {node['name']} is neither BUILDing or ACTIVE.  "
-                                "Assuming error has occurred.  Exiting...."
-                            )
-                            raise RuntimeError(errstr)
-            except Exception as _:   # noqa: F841
-                pass
 
-        print('All nodes are ready')
+            print("Waiting for instances to be ready. Sleeping 30 seconds...")
+            time.sleep(30)
 
+            waiting = False
+
+            for node in ret['nodes']:
+                if node.get('is_ready') is None:
+                    continue
+
+                id_value = node['id']
+                nova_instance = self.nova_sess.servers.get(id_value)
+                node['nova_status'] = nova_instance.status
+
+                if nova_instance.status == 'ACTIVE':
+                    print("Node " + node['name'] + " is ready!")
+                    node['is_ready'] = True
+                elif nova_instance.status == 'BUILD':
+                    waiting = True
+                else:
+                    errstr = (
+                        f"Node {node['name']} is neither BUILDing nor ACTIVE. "
+                        "Assuming error has occurred."
+                    )
+                    raise RuntimeError(errstr)
+
+        print("All nodes are ready")
         return ret
 
     def collect_info(self, enterprise, enterprise_built):
         ret = enterprise_built
+        start_time = time.time()
         for node in enterprise_built['nodes']:
             id_value = node['id']
             name = node['name']
@@ -409,7 +416,14 @@ class OpenstackCloud:
             if 'windows' not in enterprise_node['roles']:
                 print("Skipping password retrieve for non-windows node " + name)
                 continue
+
+            timeout_seconds = 10 * 60  # 10 minutes
             while True:
+                # Timeout check
+                elapsed = time.time() - start_time
+                if elapsed >= timeout_seconds:
+                    print("Timeout waiting for nodes to become ready. Hoping we can log in with a key.")
+                    break
                 nova_instance = self.nova_sess.servers.get(id_value)
                 node['password'] = nova_instance.get_password(private_key=self.cloud_config['private_key_file'])
                 if node['password'] == '':

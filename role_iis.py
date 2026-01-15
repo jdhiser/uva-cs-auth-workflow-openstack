@@ -139,7 +139,7 @@ def setup_iis(
 
             if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {{
                 Write-Warning "[Invoke-Proc] Timeout after $TimeoutSeconds s. Killing hung process (Id=$($proc.Id))."
-                try {{ if ($PSVersionTable.PSEdition -eq 'Core') {{ $proc.Kill($true) }} else {{ try {{ Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }} catch {{ }} & "$env:SystemRoot\\\System32\\taskkill.exe" /PID $($proc.Id) /T /F | Out-Null }} }} catch {{ Write-Warning "[Invoke-Proc] Kill failed: $($_)" }}
+                try {{ if ($PSVersionTable.PSEdition -eq 'Core') {{ $proc.Kill($true) }} else {{ try {{ Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }} catch {{ }} & "$env:SystemRoot\\System32\\taskkill.exe" /PID $($proc.Id) /T /F | Out-Null }} }} catch {{ Write-Warning "[Invoke-Proc] Kill failed: $($_)" }}
                 Start-Sleep -Seconds $BackoffSeconds
                 continue
             }}
@@ -208,7 +208,7 @@ CertificateTemplate = WebServer
         if ($rc -ne 0) {{ throw "certreq -accept failed ($rc)" }}
 
         # Get the most recent matching cert
-        $cert = Get-ChildItem -Path Cert:\LocalMachine\My |
+        $cert = Get-ChildItem -Path Cert:\\LocalMachine\\My |
             Where-Object {{ $_.Subject -eq "CN=$fqdn" }} |
             Sort-Object NotBefore -Descending |
             Select-Object -First 1
@@ -228,7 +228,7 @@ CertificateTemplate = WebServer
             New-WebBinding -Name $siteName -Protocol "https" -Port 443 -IPAddress "*" | Out-Null
         }}
 
-        Push-Location IIS:\SslBindings
+        Push-Location IIS:\\SslBindings
         $sslBinding = Get-Item "0.0.0.0!443" -ErrorAction SilentlyContinue
 
         if (-not $sslBinding -or $sslBinding.Thumbprint -ne $cert.Thumbprint)
