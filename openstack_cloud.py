@@ -308,15 +308,16 @@ class OpenstackCloud:
 
             image = self.os_to_image(os_name)
             flavor = self.size_to_flavor(size)
-            security_group = self.cloud_config['security_group']
-            all_groups = self.conn.list_security_groups()
-            project_groups = [
-                x for x in all_groups
-                if (x.location.project.id == self.project_id and x.name == security_group) or x.id == security_group
-            ]
-            if not len(project_groups) == 1:
-                errstr = "Found 0 or more than 1 security groups called " + security_group + "\n" + str(all_groups)
-                raise RuntimeError(errstr)
+            security_group = self.cloud_config.get('security_group', '')
+            if security_group:
+                all_groups = self.conn.list_security_groups()
+                project_groups = [
+                    x for x in all_groups
+                    if (x.location.project.id == self.project_id and x.name == security_group) or x.id == security_group
+                ]
+                if not len(project_groups) == 1:
+                    print(f"[warn] Expected exactly 1 security group called '{security_group}', "
+                          f"found {len(project_groups)}; continuing anyway")
 
             network_name = node.get('network', self.cloud_config['external_network'])
 
