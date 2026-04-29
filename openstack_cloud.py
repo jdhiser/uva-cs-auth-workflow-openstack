@@ -74,7 +74,7 @@ class OpenstackCloud:
 
         for idx, server in enumerate(nova_servers):
             server_dict = server.to_dict()
-            servers[server.human_id] = server_dict
+            servers[server_dict['name']] = server_dict
         return servers
 
     def find_zone(self):

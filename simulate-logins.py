@@ -244,7 +244,7 @@ def create_users(user_roles, enterprise):
 
 def main():
     start_date = datetime.today()
-    days_to_simulate = 10
+    days_to_simulate = 30
 
     parser = argparse.ArgumentParser(description="Process JSON files for deployment.")
 
