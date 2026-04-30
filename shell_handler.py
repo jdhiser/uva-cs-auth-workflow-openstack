@@ -14,6 +14,34 @@ from paramiko.ssh_exception import (
 )
 
 
+def is_auth_failure(error: Exception) -> bool:
+    """
+    True if the error indicates wrong credentials / unsupported auth method.
+
+    These are not transient; retrying just provokes more failed-auth events
+    and can trigger account lockout or server-side rate limiting.
+    """
+    return isinstance(error, (AuthenticationException, BadAuthenticationType))
+
+
+def is_banner_error(error: Exception) -> bool:
+    """
+    True if the error indicates the SSH transport closed before auth completed
+    (banner read failure, EOF, connection reset). On Windows OpenSSH this is
+    typically the result of the server rate-limiting after too many failed
+    attempts; the cure is a long wait, not a fast retry.
+    """
+    if isinstance(error, EOFError):
+        return True
+    if isinstance(error, SSHException):
+        msg = str(error).lower()
+        if "error reading ssh protocol banner" in msg:
+            return True
+        if "connection reset by peer" in msg:
+            return True
+    return False
+
+
 def ssh_backoff(
     attempt: int,
     retries: int,
@@ -43,6 +71,34 @@ def ssh_backoff(
     else:
         print(
             f"  [ERROR] SSH connection to {host} failed after {retries} attempts: {error}"
+        )
+        raise error
+
+
+def banner_backoff(
+    attempt: int,
+    retries: int,
+    host: str,
+    error: Exception,
+) -> None:
+    """
+    Long backoff for SSH banner / transport errors.
+
+    The server is almost certainly rate-limiting (Windows OpenSSH after a
+    failed-auth burst, fail2ban-equivalents, MaxStartups etc.). Use a much
+    larger base delay and a higher cap than the generic backoff, so we wait
+    long enough for the rate limit to clear instead of poking it again.
+    """
+    if attempt < retries - 1:
+        delay = min(600.0, 60.0 * (2 ** attempt))
+        print(
+            f"  [WARN] SSH banner/transport error from {host} on attempt {attempt + 1}/{retries}: "
+            f"{error}. Server is likely rate-limiting; sleeping {delay:.1f}s before retry..."
+        )
+        time.sleep(delay)
+    else:
+        print(
+            f"  [ERROR] SSH banner/transport error from {host} persisted after {retries} attempts: {error}"
         )
         raise error
 
@@ -170,8 +226,24 @@ class ShellHandler:
                     print("  [INFO] Connected!")
                 break
 
-            # Both modes failed for this attempt
-            ssh_backoff(attempt, retries, base_delay, host, last_error or SSHException("unknown error"))
+            err = last_error or SSHException("unknown error")
+
+            # Auth failures aren't transient — wrong creds / disallowed method.
+            # Re-attempting just generates more failed-auth events on the server,
+            # which can trigger account lockout or SSH rate limiting.
+            if is_auth_failure(err):
+                print(
+                    f"  [ERROR] SSH authentication to {host} failed: {err}. "
+                    "Not retrying (auth errors are not transient)."
+                )
+                raise err
+
+            # Banner / transport errors: server is likely rate-limiting. Use a
+            # much longer backoff so we don't keep poking it.
+            if is_banner_error(err):
+                banner_backoff(attempt, retries, host, err)
+            else:
+                ssh_backoff(attempt, retries, base_delay, host, err)
 
         # Open SFTP after successful SSH connect
         self.sftp = self.ssh.open_sftp()

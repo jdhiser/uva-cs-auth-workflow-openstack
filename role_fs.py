@@ -67,7 +67,7 @@ sudo timedatectl set-timezone America/New_York
 sudo systemctl enable chrony
 sudo systemctl restart chrony
 
-sudo sed -i '/dhcp4: true/a \\            nameservers:\\n                addresses: [ {domain_ips_formated} ]' {netplan_config_path}
+sudo sed -i -E 's/^( *)dhcp4: true$/&\\n\\1nameservers:\\n\\1  addresses: [ {domain_ips_formated} ]/' {netplan_config_path}
 sudo netplan apply
 sudo mkdir -p /srv/samba/homes
 sudo chmod 0755 /srv/samba/homes

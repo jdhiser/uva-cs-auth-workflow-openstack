@@ -141,7 +141,6 @@ def apply_fake_fromip(dev, mac, from_ip):
     return del_command
 
 
-<<<<<<< HEAD
 def run_windows_login(shell, username: str, password: str, duration: int, seed: int, workflows: Optional[List[str]] = None) -> Tuple[List[str], List[str], int]:
     """
     Simulate a Windows login using the human automation script, mirroring run_linux_login.
@@ -171,38 +170,6 @@ def run_windows_login(shell, username: str, password: str, duration: int, seed: 
     ps_script = f"""
     New-Item -Path C:\\tmp -ItemType Directory -Force | Out-Null
     @"
-=======
-
-
-def run_windows_login(shell, username: str, password: str, duration: int, seed: int, workflows: Optional[List[str]] = None) -> Tuple[List[str], List[str], int]:
-	"""
-	Simulate a Windows login using the human automation script, mirroring run_linux_login.
-
-	Parameters:
-		shell: ShellHandler instance (must support execute_powershell_multiline)
-		username (str): Username for login
-		password (str): Corresponding password
-		duration (int): How long to run the login session (seconds)
-		seed (int): Random seed for reproducibility
-		workflows (List[str], optional): List of workflows to pass to human.py
-
-	Returns:
-		Tuple[List[str], List[str], int]: stdout, stderr, and exit status
-	"""
-
-	passfile = f"C:\\tmp\\shib_login.{username}"
-
-	workflow_args = ""
-	if workflows:
-		workflow_args = "--workflows " + " ".join(workflows)
-
-	# PowerShell script closely parallels the Linux version's behavior:
-	#   1) Write username+password to a passfile
-	#   2) Ensure a working directory (use $env:USERPROFILE like 'cd')
-	#   3) Run python -u human.py with the same flags used by run_linux_login
-	ps_script = f"""
-	New-Item -Path C:\\tmp -ItemType Directory -Force | Out-Null
-	@"
 {username}
 {password}
 "@ | Set-Content -Path "{passfile}" -Encoding ASCII
@@ -223,8 +190,7 @@ def run_windows_login(shell, username: str, password: str, duration: int, seed: 
         --extra passfile {passfile}
 """
 
-
-	return shell.execute_powershell_multiline(ps_script, filename=f"run_human-{username}", verbose=True)
+    return shell.execute_powershell_multiline(ps_script, filename=f"run_human-{username}", verbose=True)
 
 
 def run_linux_login(shell, username, password, duration, seed, workflows: Optional[List[str]] = None):

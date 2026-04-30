@@ -211,34 +211,48 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
     stdout = []
     stderr = []
     exit_status = []
-    attempts = 0
+
+    max_install_attempts = 3
+    install_succeeded = False
+    for install_attempt in range(1, max_install_attempts + 1):
+        try:
+            print(f"  Trying to install AD and join domain on {name} (attempt {install_attempt}/{max_install_attempts})")
+            shell = ShellHandler(control_ipv4_addr, user, password, retries=2)
+            stdout2, stderr2, exit_status2 = shell.execute_powershell_multiline(adcmd, filename="ad-install.ps1", verbose=verbose)
+            stdout.append(stdout2)
+            stderr.append(stderr2)
+            exit_status.append(exit_status2)
+            install_succeeded = True
+            break
+        except Exception as e:
+            print(f"  Install AD attempt {install_attempt} failed: {type(e).__name__}: {e}")
+            if install_attempt < max_install_attempts:
+                print("  Sleeping 30s before retrying install...")
+                time.sleep(30)
+
+    if not install_succeeded:
+        errstr = f"Failed to install AD on {name} after {max_install_attempts} attempts"
+        raise RuntimeError(errstr)
+
+    print(f"  Trying to finalize domain join of {name}")
     try:
-        print(f"  Trying to install AD and join domain on {name}")
-        shell = ShellHandler(control_ipv4_addr, user, password, retries=2)
-        attempts += 1
-        stdout2, stderr2, exit_status2 = shell.execute_powershell_multiline(adcmd, filename="ad-install.ps1", verbose=verbose)
-
-        stdout.append(stdout2)
-        stderr.append(stderr2)
-        exit_status.append(exit_status2)
-
-        print(f"  Trying to finalize domain join of {name}")
         shell = ShellHandler(control_ipv4_addr, user, password, retries=1)
         shell.execute_powershell('Restart-computer -force', verbose=verbose)
-    except Exception:
-        # it's OK to ignore exceptions here, because we next check that we can connect
-        # as the domain admin.  only if that fails do we really fail.
-        # in fact, we somewhat expect a socket error when we reboot.
-        pass
+    except Exception as e:
+        # Socket errors during reboot are expected — the SSH session dies as the host goes down.
+        print(f"  Reboot triggered (received expected exception {type(e).__name__}: {e})")
 
     print(f"  Waiting for domain join confirmation from {name}")
     time.sleep(10)
     status_received = False
     attempts = 0
-    while not status_received and attempts < 60:
+    verify_timeout_sec = 20 * 60
+    verify_deadline = time.time() + verify_timeout_sec
+    while not status_received and time.time() < verify_deadline:
         try:
             attempts += 1
-            print("  Trying to install AD and join domain")
+            remaining = int(verify_deadline - time.time())
+            print(f"  Verifying AD startup on {name} (attempt {attempts}, {remaining}s remaining)")
             shell = ShellHandler(control_ipv4_addr, user, leader_admin_password, retries=1)
             stdout2, stderr2, exit_status2 = shell.execute_powershell("get-addomain", verbose=verbose)
             if 'ReplicaDirectoryServers' not in str(stdout2):
@@ -254,9 +268,8 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
             paramiko.ssh_exception.NoValidConnectionsError,
             TimeoutError
         ) as e:
-            print(f"  SSH exception {type(e).__name__}handled, retrying...")
+            print(f"  SSH exception {type(e).__name__} handled, retrying: {e}")
             time.sleep(10)
-            pass
 
     if "stdout2" not in locals() or 'ReplicaDirectoryServers' not in str(stdout2):
         if "stdout" in locals():
@@ -573,7 +586,7 @@ sudo sed -i 's/KbdInteractiveAuthentication no/KbdInteractiveAuthentication yes/
 sudo rm /etc/ssh/sshd_config.d/60-cloudimg-settings.conf
 
 # setup DNS for domain join.
-sudo sed -i '/dhcp4: true/a \\            nameservers:\\n                addresses: \\[ {domain_ips_formated} \\]' {netplan_config_path}
+sudo sed -i -E 's/^( *)dhcp4: true$/&\\n\\1nameservers:\\n\\1  addresses: [ {domain_ips_formated} ]/' {netplan_config_path}
 
 # gather output for sanity check.
 cat {netplan_config_path}

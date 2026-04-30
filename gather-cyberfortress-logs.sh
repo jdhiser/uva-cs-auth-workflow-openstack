@@ -35,9 +35,9 @@ do_workflow()
 	fi
 
 	./cleanup-nodes.py "$DEPLOY_OUTPUT" || true
-	sleep 1m # time for cleanup to finish
+	sleep 1m || true # time for cleanup to finish
 	./deploy-nodes.py  -c "$CLOUD_CONFIG" -e "$ENTERPRISE_CONFIG"
-	sleep 5m  # wait for machines to deploy
+	sleep 5m  || true # wait for machines to deploy
 	./post-deploy.py  "$DEPLOY_OUTPUT"
 	./simulate-logins.py --seed "$seed" "$USER_ROLES" "$ENTERPRISE_CONFIG" "$POST_DEPLOY_OUTPUT"
 	if [[ $impact = none ]]
