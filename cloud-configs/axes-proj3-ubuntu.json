@@ -1,18 +1,20 @@
 {
 	"cloud_type": "openstack",
 	"private_key_file":     "/home/ubuntu/.ssh/id_rsa",
-	"external_network": "ext_net",
-	"keypair": "jdhKeyPair",
+	"external_network": "control-network",
+	"keypair": "castle-control",
 	"image_map":
 	{
-		"win2k22": "ws2022-cs-license",
+		"win2k22": "windows_server_2022-openstack",
 		"jammy": "jammy-amd64"
 
 	},
-	"instance_size_map": 
+	"instance_size_map":
 	{
-		"small": "m1.small"
+		"small": "m1.small",
+		"medium": "m1.medium",
+		"large": "m1.large"
 	},
-	"security_group": "All_Traffic",
+	"security_group": "cage2-secgroup",
 	"enterprise_url": "castle3.os"
 }
