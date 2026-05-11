@@ -61,6 +61,37 @@ def fqdn_to_dn(fqdn_domain_name: str) -> str:
     return dn
 
 
+def _is_auth_failure(error: Exception) -> bool:
+    """True if an SSH error indicates rejected credentials (not transient)."""
+    return isinstance(error, (
+        paramiko.ssh_exception.AuthenticationException,
+        paramiko.ssh_exception.BadAuthenticationType,
+    ))
+
+
+def _verify_windows_in_domain(host, domain_name, leader_admin_password, retries=3):
+    """
+    Confirm a Windows host is a member of the named domain by SSHing as
+    DOMAIN\\Administrator and checking $env:userdomain.
+
+    Returns (stdout, stderr, exit_status) on success or None on failure.
+    Used as the "skip-the-join" idempotency probe.
+    """
+    user = 'Administrator'
+    try:
+        shell = ShellHandler(host, domain_name + '\\' + user, leader_admin_password, retries=retries)
+        stdout, stderr, status = shell.execute_powershell(
+            'gpupdate /force; echo "the domain is $env:userdomain"',
+            verbose=verbose,
+        )
+        if 'the domain is {}'.format(domain_name.upper()) in str(stdout):
+            return stdout, stderr, status
+        return None
+    except Exception as e:
+        print(f"  [INFO] Domain verify on {host} as {domain_name}\\{user} failed: {type(e).__name__}: {e}")
+        return None
+
+
 def deploy_forest(cloud_config, name, control_ipv4_addr, game_ipv4_addr, password, domain):
 
     user = 'Administrator'
@@ -214,6 +245,7 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
 
     max_install_attempts = 3
     install_succeeded = False
+    already_promoted = False
     for install_attempt in range(1, max_install_attempts + 1):
         try:
             print(f"  Trying to install AD and join domain on {name} (attempt {install_attempt}/{max_install_attempts})")
@@ -225,22 +257,33 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
             install_succeeded = True
             break
         except Exception as e:
+            if _is_auth_failure(e):
+                # Local admin password no longer authenticates — node was likely
+                # already promoted on a prior run. Skip install and reboot, and
+                # let the verify step below confirm with leader_admin_password.
+                print(f"  Local admin SSH refused on {name} ({type(e).__name__}): {e}")
+                print(f"  Assuming {name} was already promoted; skipping install and reboot.")
+                already_promoted = True
+                break
             print(f"  Install AD attempt {install_attempt} failed: {type(e).__name__}: {e}")
             if install_attempt < max_install_attempts:
                 print("  Sleeping 30s before retrying install...")
                 time.sleep(30)
 
-    if not install_succeeded:
+    if not install_succeeded and not already_promoted:
         errstr = f"Failed to install AD on {name} after {max_install_attempts} attempts"
         raise RuntimeError(errstr)
 
-    print(f"  Trying to finalize domain join of {name}")
-    try:
-        shell = ShellHandler(control_ipv4_addr, user, password, retries=1)
-        shell.execute_powershell('Restart-computer -force', verbose=verbose)
-    except Exception as e:
-        # Socket errors during reboot are expected — the SSH session dies as the host goes down.
-        print(f"  Reboot triggered (received expected exception {type(e).__name__}: {e})")
+    if install_succeeded:
+        print(f"  Trying to finalize domain join of {name}")
+        try:
+            shell = ShellHandler(control_ipv4_addr, user, password, retries=1)
+            shell.execute_powershell('Restart-computer -force', verbose=verbose)
+        except Exception as e:
+            # Socket errors during reboot are expected — the SSH session dies as the host goes down.
+            print(f"  Reboot triggered (received expected exception {type(e).__name__}: {e})")
+    else:
+        print(f"  Skipping reboot for {name} (already promoted)")
 
     print(f"  Waiting for domain join confirmation from {name}")
     time.sleep(10)
@@ -373,8 +416,39 @@ Set-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\
 
     print(f"  {name} is joining an existing domain: {domain_name}")
 
-    shell = ShellHandler(control_ipv4_addr, user, password)
+    # Idempotency: if local-admin SSH is rejected, the machine has probably
+    # already been domain-joined on a prior run (local admin password no longer
+    # authenticates over SSH). Probe with local admin first; if it fails, ask
+    # the host with domain creds whether it's already in the domain and treat
+    # that as success.
+    try:
+        shell = ShellHandler(control_ipv4_addr, user, password, retries=2)
+    except Exception as probe_err:
+        print(f"  Local admin SSH refused on {name} ({type(probe_err).__name__}: {probe_err}); checking if already domain-joined.")
+        verify_result = _verify_windows_in_domain(control_ipv4_addr, domain_name, leader_admin_password)
+        if verify_result is not None:
+            stdout2, stderr2, exit_status2 = verify_result
+            print(f"  {name} is already in domain {domain_name}; skipping join.")
+            return {
+                "join_domain": {"join-cmd": cmd, "stdout": [], "stderr": [], "exit_status": 0, "skipped": True},
+                "verify_join_domain": {"stdout": stdout2, "stderr": stderr2, "exit_status": exit_status2}
+            }
+        raise RuntimeError(
+            f"Cannot connect to {name}: local admin SSH refused ({probe_err}) "
+            f"and domain verify did not confirm membership."
+        )
+
     stdout, stderr, exit_status = shell.execute_powershell_multiline(cmd, filename="join-domain", verbose=verbose)
+
+    # Surface a failed join now instead of rebooting and waiting through 60+
+    # post-reboot domain-cred verifies. The script `exit 1`s if Add-Computer
+    # never succeeds (e.g. DNS couldn't resolve the domain because the game
+    # adapter was never renamed in register_windows).
+    if exit_status != 0:
+        tail = ''.join(stdout[-30:]) if isinstance(stdout, list) else str(stdout)
+        print(f"  [ERROR] Domain join script for {name} exited with status {exit_status}.")
+        print(f"  Last 30 lines of stdout:\n{tail}")
+        raise RuntimeError(f"Domain join script failed on {name} (exit_status={exit_status})")
 
     try:
         shell = ShellHandler(control_ipv4_addr, user, password)
@@ -854,27 +928,68 @@ def setup_root_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_deta
         Get-ADDomain
         Install-WindowsFeature ADCS-Cert-Authority
         Import-Module ADCSDeployment
-        for ($i = 1; $i -le $MaxRetries; $i++) {{
-            Write-Host "[$i/$MaxRetries] Running Install-AdcsCertificationAuthority"
+
+        $rootCaName = "{domain_name}-RootCA"
+
+        function Get-RootCAState {{
+            param(
+                [Parameter(Mandatory=$true)][string] $CACommonName
+            )
+
+            $feature     = Get-WindowsFeature ADCS-Cert-Authority
+            $hasFeature  = $feature -and $feature.Installed
+
+            $configKey   = "HKLM:\SYSTEM\CurrentControlSet\Services\CertSvc\Configuration\$CACommonName"
+            $hasConfig   = Test-Path $configKey
+
+            $caInfoOk    = $false
             try {{
-                Install-AdcsCertificationAuthority -CAType EnterpriseRootCA `
-                    -CryptoProviderName 'RSA#Microsoft Software Key Storage Provider' `
-                    -KeyLength 2048 `
-                    -HashAlgorithmName SHA256 `
-                    -ValidityPeriod Years -ValidityPeriodUnits 5 `
-                    -CACommonName "{domain_name}-RootCA" `
-                    -CADistinguishedNameSuffix "{dn_suffix}" `
-                    -Force
-                Write-Host "Install-AdcsCertificationAuthority succeeded."
-                break
-            }} catch {{
-                Write-Warning "Install-AdcsCertificationAuthority failed."
-                if ($i -lt $MaxRetries) {{
-                    Write-Host "Waiting $DelaySeconds seconds before retry..."
-                    Start-Sleep -Seconds $DelaySeconds
+                $out = certutil -CAInfo | Out-String
+                if ($out -match 'CertUtil: -CAInfo command completed successfully') {{
+                    $caInfoOk = $true
                 }}
-                else {{
-                    Write-Error "Install-AdcsCertificationAuthority failed after $MaxRetries attempts."
+            }} catch {{
+                # ignore, just report false
+            }}
+
+            [PSCustomObject]@{{
+                FeatureInstalled = $hasFeature
+                ConfigExists     = $hasConfig
+                CAInfoOk         = $caInfoOk
+            }}
+        }}
+
+        $rootState = Get-RootCAState -CACommonName $rootCaName
+        if ($rootState.CAInfoOk -and $rootState.ConfigExists) {{
+            Write-Host "Root CA '$rootCaName' already appears fully configured. Skipping Install-AdcsCertificationAuthority."
+        }} else {{
+            for ($i = 1; $i -le $MaxRetries; $i++) {{
+                Write-Host "[$i/$MaxRetries] Running Install-AdcsCertificationAuthority"
+                try {{
+                    Install-AdcsCertificationAuthority -CAType EnterpriseRootCA `
+                        -CryptoProviderName 'RSA#Microsoft Software Key Storage Provider' `
+                        -KeyLength 2048 `
+                        -HashAlgorithmName SHA256 `
+                        -ValidityPeriod Years -ValidityPeriodUnits 5 `
+                        -CACommonName $rootCaName `
+                        -CADistinguishedNameSuffix "{dn_suffix}" `
+                        -Force
+                    Write-Host "Install-AdcsCertificationAuthority succeeded."
+                    break
+                }} catch {{
+                    $msg = $_.Exception.Message
+                    Write-Warning "Install-AdcsCertificationAuthority failed: $msg"
+                    if ($msg -match 'The Certification Authority is already installed') {{
+                        Write-Host "CA reports as already installed. Treating as success for idempotency."
+                        break
+                    }}
+                    if ($i -lt $MaxRetries) {{
+                        Write-Host "Waiting $DelaySeconds seconds before retry..."
+                        Start-Sleep -Seconds $DelaySeconds
+                    }}
+                    else {{
+                        Write-Error "Install-AdcsCertificationAuthority failed after $MaxRetries attempts."
+                    }}
                 }}
             }}
         }}

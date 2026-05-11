@@ -115,9 +115,9 @@ main()
 	./post-deploy.py deploy-output.json || exit 1
 	./simulate-logins.py user-roles/user-roles.json enterprise-configs/dc-cs-fs-moodle.json post-deploy-output.json || exit 1
 
-	run_workflow moodle 100
+	run_workflow moodle 300
 	run_workflow build_software 600
-	run_workflow browse_iis 100
+	run_workflow browse_iis 300
 
 	./cleanup-nodes.py deploy-output.json || exit 1
 

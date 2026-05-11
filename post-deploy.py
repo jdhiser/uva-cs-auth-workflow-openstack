@@ -15,6 +15,11 @@ import os
 from datetime import datetime
 from joblib import Parallel, delayed
 
+# Force line-buffered stdout/stderr so progress shows up live when piped
+# through tee or captured to a log, without needing PYTHONUNBUFFERED=1 or -u.
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
 use_parallel = True
 verbose = not use_parallel
 
@@ -49,12 +54,27 @@ def register_windows(enterprise, enterprise_built, only):
     access_list = []
     windows_nodes = list(filter(lambda x: 'windows' in x['roles'], enterprise['nodes']))
     windows_nodes = [x for x in windows_nodes if only is None or x['name'] in only]
+    # Pull leader_details if a prior post-deploy already set up the domains;
+    # on a fresh first run this will be empty. register_windows_instance uses
+    # this to confirm domain membership when local-admin SSH fails.
+    domain_leaders = (
+        (enterprise_built or {}).get('setup', {}).get('setup_domains', {}).get('domain_leaders', {}) or {}
+    )
     for node in windows_nodes:
         name = node['name']
         print("  Registering windows on " + name)
         control_ipv4_addr, game_ipv4_addr, password = extract_creds(enterprise_built, name)
+        domain = node.get('domain')
+        leader_admin_password = (domain_leaders.get(domain) or {}).get('admin_pass') if domain else None
         access_list.append(
-            {"name": name, "control_addr": control_ipv4_addr, "game_addr": game_ipv4_addr, "password": str(password)}
+            {
+                "name": name,
+                "control_addr": control_ipv4_addr,
+                "game_addr": game_ipv4_addr,
+                "password": str(password),
+                "domain": domain,
+                "leader_admin_password": leader_admin_password,
+            }
         )
 
     if use_parallel:

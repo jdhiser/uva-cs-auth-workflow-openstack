@@ -177,9 +177,6 @@ class ShellHandler:
             self.sock.bind((from_ip, 0))
             self.sock.connect((host, port))  # Paramiko accepts a pre-connected socket
 
-        self.ssh = paramiko.SSHClient()
-        self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
         base_params: Dict[str, object] = {
             "hostname": host,
             "port": port,
@@ -192,9 +189,25 @@ class ShellHandler:
         }
 
         last_error: Optional[Exception] = None
+        self.ssh: Optional[paramiko.SSHClient] = None
         for attempt in range(retries):
             if self.verbose:
                 print(f"  [INFO] SSH connect attempt {attempt + 1}/{retries} to {host}:{port}")
+
+            # Construct a fresh SSHClient per attempt. Reusing a client across
+            # retries can leave stale paramiko transport / auth-handler state
+            # from a prior failed attempt, which surfaces as e.g.
+            # "TypeError: object of type 'NoneType' has no len()" out of
+            # auth_handler._parse_service_accept (self.username cleared while
+            # a late message from the previous attempt is still being
+            # dispatched on the transport thread).
+            if self.ssh is not None:
+                try:
+                    self.ssh.close()
+                except Exception:
+                    pass
+            self.ssh = paramiko.SSHClient()
+            self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
             connected = False
 
@@ -379,6 +392,14 @@ class ShellHandler:
         self.put_file_from_string(script_path, script_contents)
 
         # Write wrapper script that enables tracing and logging in the child script
+        # NOTE: do NOT capture the child's output into a variable before
+        # printing. The caller may be on a timeout (e.g. CI's `timeout 100
+        # ./emulate-logins.py ...`) and needs partial progress streamed back
+        # live. Buffering into $output meant a 95s script + 5s of tee delivery
+        # produced "=== Starting ps1 ===" then 100s of silence then SIGTERM —
+        # losing every workflow-level success record the inner script emitted.
+        # *>&1 keeps PowerShell's warning/verbose/debug streams folded into
+        # stdout so paramiko receives one ordered stream.
         wrapper_contents = f"""
 $OutputEncoding = [System.Text.Encoding]::UTF8
 Start-Transcript -Path "{log_path}" -Force
@@ -390,9 +411,8 @@ Set-PSDebug -Trace 1
 . "{script_path}"
 Set-PSDebug -Trace 0
 '@
-    $output = powershell -ExecutionPolicy Bypass -NoProfile -Command $command *>&1
+    powershell -ExecutionPolicy Bypass -NoProfile -Command $command *>&1
     $exitCode = $LASTEXITCODE
-    $output | ForEach-Object {{ Write-Host $_ }}
 
     Write-Host "=== Finished ps1 ==="
     exit $exitCode

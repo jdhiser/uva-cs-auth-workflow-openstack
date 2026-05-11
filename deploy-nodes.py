@@ -7,6 +7,11 @@ import json
 from datetime import datetime
 from openstack_cloud import OpenstackCloud
 
+# Force line-buffered stdout/stderr so progress shows up live when piped
+# through tee or captured to a log, without needing PYTHONUNBUFFERED=1 or -u.
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
 import urllib3
 urllib3.disable_warnings()
 
