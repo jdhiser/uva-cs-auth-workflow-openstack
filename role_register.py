@@ -1,4 +1,5 @@
 import time
+from typing import Optional
 import paramiko
 from shell_handler import ShellHandler
 
@@ -6,7 +7,8 @@ verbose = False
 
 
 def wait_for_local_admin_ssh(host: str, user: str, password: str,
-                             deadline_sec: int = 300, poll_sec: int = 10) -> bool:
+                             deadline_sec: int = 300, poll_sec: int = 10,
+                             log_every_sec: int = 60) -> bool:
     """
     Poll until local-admin SSH is accepted on `host`, or `deadline_sec` passes.
 
@@ -16,25 +18,45 @@ def wait_for_local_admin_ssh(host: str, user: str, password: str,
     auth errors as terminal (correct in most contexts). We add a thin retry
     here so register_windows_instance doesn't fast-fail on transient bring-up.
 
+    Logging: emits one line at start, one line at most every `log_every_sec`
+    while polling (and whenever the error type changes), and one line at end.
+    Passes quiet_errors=True to ShellHandler so its own [ERROR] line is
+    suppressed for each attempt — this loop logs its own progress instead.
+
     Returns True if SSH eventually works, False if the deadline expires (e.g.
     the node is already domain-joined and the local password no longer works).
     """
-    deadline = time.time() + deadline_sec
+    start = time.time()
+    deadline = start + deadline_sec
+    print(f"  [INFO] {host}: waiting for local admin SSH (up to {deadline_sec}s)")
     attempt = 0
+    last_log_time = 0.0
+    last_err_type: Optional[str] = None
     while time.time() < deadline:
         attempt += 1
         try:
-            shell = ShellHandler(host, user, password, retries=1, verbose=False)
+            shell = ShellHandler(host, user, password, retries=1, verbose=False, quiet_errors=True)
             shell.execute_powershell("Write-Host ssh-ready", verbose=False)
+            elapsed = int(time.time() - start)
+            print(f"  [INFO] {host}: local admin SSH ready after {elapsed}s ({attempt} attempts)")
             return True
         except paramiko.ssh_exception.AuthenticationException:
-            remaining = max(0, int(deadline - time.time()))
-            print(f"  [INFO] {host}: local admin SSH not ready yet (attempt {attempt}); {remaining}s remaining.")
-            time.sleep(poll_sec)
+            err_type = 'AuthenticationException'
+            err_msg = 'auth rejected'
         except Exception as e:
-            remaining = max(0, int(deadline - time.time()))
-            print(f"  [INFO] {host}: SSH probe got {type(e).__name__}: {e}; {remaining}s remaining.")
-            time.sleep(poll_sec)
+            err_type = type(e).__name__
+            err_msg = str(e)
+
+        now = time.time()
+        if (now - last_log_time >= log_every_sec) or (err_type != last_err_type):
+            remaining = max(0, int(deadline - now))
+            print(f"  [INFO] {host}: local admin SSH not ready ({err_type}: {err_msg}; "
+                  f"attempt {attempt}, {remaining}s remaining)")
+            last_log_time = now
+            last_err_type = err_type
+        time.sleep(poll_sec)
+    elapsed = int(time.time() - start)
+    print(f"  [INFO] {host}: local admin SSH timed out after {elapsed}s ({attempt} attempts)")
     return False
 
 

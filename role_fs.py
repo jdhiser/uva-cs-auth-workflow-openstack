@@ -353,15 +353,42 @@ EOT
     # wait for services to be ready.
     time.sleep(15)
 
+    # SSSD on a freshly-domain-joined Linux box doesn't always accept domain
+    # logins immediately after the join verify succeeds — `administrator`
+    # auth can fail with "Authentication failed: transport shut down or saw
+    # EOF" for tens of seconds. We poll patiently: any exception from the
+    # SSH attempt is treated as "not ready yet, retry," not as a terminal
+    # failure. quiet_errors=True suppresses the per-attempt ShellHandler
+    # [ERROR] line; this loop logs its own throttled progress.
     count = 0
-    while count < 50:
-        shell = ShellHandler(control_ipv4_addr, "administrator", leader_admin_password)
+    max_count = 50
+    stdout2 = None
+    stderr2 = None
+    exit_status2 = None
+    last_log_time = 0.0
+    last_err_type = None
+    while count < max_count:
+        count += 1
+        try:
+            shell = ShellHandler(
+                control_ipv4_addr, "administrator", leader_admin_password,
+                retries=1, quiet_errors=True,
+            )
+            test_setup = "pwd"
+            stdout2, stderr2, exit_status2 = shell.execute_cmd(test_setup, verbose=verbose)
+        except Exception as e:
+            now = time.time()
+            err_type = type(e).__name__
+            if (now - last_log_time >= 60) or err_type != last_err_type:
+                print(f"  [{name}] SSH as administrator (domain) not ready yet ({err_type}: {e}); "
+                      f"attempt {count}/{max_count}, retrying in 15s.")
+                last_log_time = now
+                last_err_type = err_type
+            time.sleep(15)
+            continue
 
-        test_setup = "pwd"
-        stdout2, stderr2, exit_status2 = shell.execute_cmd(test_setup, verbose=verbose)
         if stdout2 is None or f'/home/{fqdn_domain_name.lower()}/administrator' not in str(stdout2):
-            print(f"Could not find home directory mounting on {name}, retrying in 15s ...")
-            count += 1
+            print(f"  [{name}] Home directory mount not visible yet (attempt {count}/{max_count}), retrying in 15s ...")
             time.sleep(15)
             continue
 
@@ -371,9 +398,9 @@ EOT
         }
 
     if stdout2 is None or f'/home/{fqdn_domain_name.lower()}/administrator' not in str(stdout2):
-        print("mount_home_directories_stdout:" + str(stdout))
-        print("mount_home_directories_stderr:" + str(stderr))
-        print("verify_home_directories_stdout:" + str(stdout2))
-        print("verify_home_directories_stderr:" + str(stderr2))
+        print(f"[{name}] mount_home_directories_stdout: {stdout}")
+        print(f"[{name}] mount_home_directories_stderr: {stderr}")
+        print(f"[{name}] verify_home_directories_stdout: {stdout2}")
+        print(f"[{name}] verify_home_directories_stderr: {stderr2}")
         errstr = f'Cannot find fileserver share for home directories on {name}'
         raise RuntimeError(errstr)

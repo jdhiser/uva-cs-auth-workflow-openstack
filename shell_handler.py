@@ -48,6 +48,7 @@ def ssh_backoff(
     base_delay: float,
     host: str,
     error: Exception,
+    quiet: bool = False,
 ) -> None:
     """
     Handle backoff delay and logging for failed attempts.
@@ -58,20 +59,23 @@ def ssh_backoff(
         base_delay: Base delay seconds for exponential backoff.
         host: Target host, for logging.
         error: The exception that caused the failure.
+        quiet: When True, suppress WARN/ERROR prints (caller will log instead).
     Returns:
         None. Either sleeps for the backoff duration, or raises the final error.
     """
     if attempt < retries - 1:
         delay = min(60.0, base_delay * (2 ** attempt))
-        print(
-            f"  [WARN] SSH connection to {host} failed on attempt {attempt + 1}/{retries}: "
-            f"{error}. Retrying in {delay:.1f}s..."
-        )
+        if not quiet:
+            print(
+                f"  [WARN] SSH connection to {host} failed on attempt {attempt + 1}/{retries}: "
+                f"{error}. Retrying in {delay:.1f}s..."
+            )
         time.sleep(delay)
     else:
-        print(
-            f"  [ERROR] SSH connection to {host} failed after {retries} attempts: {error}"
-        )
+        if not quiet:
+            print(
+                f"  [ERROR] SSH connection to {host} failed after {retries} attempts: {error}"
+            )
         raise error
 
 
@@ -80,6 +84,7 @@ def banner_backoff(
     retries: int,
     host: str,
     error: Exception,
+    quiet: bool = False,
 ) -> None:
     """
     Long backoff for SSH banner / transport errors.
@@ -91,15 +96,17 @@ def banner_backoff(
     """
     if attempt < retries - 1:
         delay = min(600.0, 60.0 * (2 ** attempt))
-        print(
-            f"  [WARN] SSH banner/transport error from {host} on attempt {attempt + 1}/{retries}: "
-            f"{error}. Server is likely rate-limiting; sleeping {delay:.1f}s before retry..."
-        )
+        if not quiet:
+            print(
+                f"  [WARN] SSH banner/transport error from {host} on attempt {attempt + 1}/{retries}: "
+                f"{error}. Server is likely rate-limiting; sleeping {delay:.1f}s before retry..."
+            )
         time.sleep(delay)
     else:
-        print(
-            f"  [ERROR] SSH banner/transport error from {host} persisted after {retries} attempts: {error}"
-        )
+        if not quiet:
+            print(
+                f"  [ERROR] SSH banner/transport error from {host} persisted after {retries} attempts: {error}"
+            )
         raise error
 
 
@@ -167,7 +174,14 @@ class ShellHandler:
         retries: int = 10,
         base_delay: float = 5.0,
         port: int = 22,
+        quiet_errors: bool = False,
     ) -> None:
+        # If True, suppress this handler's [WARN]/[ERROR] prints on auth /
+        # banner / connection failures — for use by callers that wrap the
+        # handler in their own polling loop and emit their own progress lines
+        # (e.g. role_register.wait_for_local_admin_ssh). The exception is
+        # still raised; only the in-handler print is silenced.
+        self.quiet_errors = quiet_errors
         self.verbose = verbose
         self.sock: Optional[socket.socket] = None
 
@@ -245,18 +259,19 @@ class ShellHandler:
             # Re-attempting just generates more failed-auth events on the server,
             # which can trigger account lockout or SSH rate limiting.
             if is_auth_failure(err):
-                print(
-                    f"  [ERROR] SSH authentication to {host} failed: {err}. "
-                    "Not retrying (auth errors are not transient)."
-                )
+                if not self.quiet_errors:
+                    print(
+                        f"  [ERROR] SSH authentication to {host} failed: {err}. "
+                        "Not retrying (auth errors are not transient)."
+                    )
                 raise err
 
             # Banner / transport errors: server is likely rate-limiting. Use a
             # much longer backoff so we don't keep poking it.
             if is_banner_error(err):
-                banner_backoff(attempt, retries, host, err)
+                banner_backoff(attempt, retries, host, err, quiet=self.quiet_errors)
             else:
-                ssh_backoff(attempt, retries, base_delay, host, err)
+                ssh_backoff(attempt, retries, base_delay, host, err, quiet=self.quiet_errors)
 
         # Open SFTP after successful SSH connect
         self.sftp = self.ssh.open_sftp()

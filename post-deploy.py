@@ -555,9 +555,39 @@ def main():
     args = parser.parse_args()
 
     json_output = {}
+    rc = 0
     try:
         setup_output_filename = args.deploy_output
         setup_output = load_json(setup_output_filename)
+
+        # If a previous post-deploy run left partial state behind for the
+        # SAME deploy (matching OpenStack node IDs), merge its
+        # enterprise_built['setup'] so re-run idempotency probes can see
+        # leader_admin_password etc. We compare node IDs (not just mtime) so
+        # a stale post-deploy-output.json from a prior cleanup+deploy cycle
+        # is detected and ignored — the new deploy-output.json has fresh
+        # OpenStack server IDs that won't match.
+        try:
+            if os.path.exists("post-deploy-output.json"):
+                prior = load_json("post-deploy-output.json")
+                cur_ids = sorted(
+                    n.get('id') for n in setup_output.get('enterprise_built', {}).get('nodes', [])
+                    if n.get('id')
+                )
+                prior_ids = sorted(
+                    n.get('id') for n in prior.get('enterprise_built', {}).get('nodes', [])
+                    if n.get('id')
+                )
+                if cur_ids and cur_ids == prior_ids:
+                    prior_setup = prior.get('enterprise_built', {}).get('setup')
+                    if prior_setup:
+                        setup_output.setdefault('enterprise_built', {}).setdefault('setup', {})
+                        setup_output['enterprise_built']['setup'].update(prior_setup)
+                        print("[INFO] Merged prior setup state from post-deploy-output.json (matching node IDs) for idempotency.")
+                elif prior_ids:
+                    print("[INFO] Ignoring post-deploy-output.json (node IDs differ from current deploy; likely stale from prior cleanup).")
+        except Exception as e:
+            print(f"[WARN] Could not merge prior post-deploy-output.json: {e}")
 
         json_output = setup_output
         json_output["setup-start_time"] = str(datetime.now())
@@ -581,15 +611,30 @@ def main():
         sys.stdout.flush()
         sys.stderr.flush()
         traceback.print_exc()
-        print("Exception occured while setting up enterprise.  Dumping results to post-deploy-output.json anyhow.")
+        print("Exception occured while setting up enterprise.  Dumping partial results to post-deploy-output.json so a re-run can pick up where we left off.")
         sys.stdout.flush()
         sys.stderr.flush()
-        return 1
+        # Best-effort: snapshot enterprise_built / enterprise so a re-run gets
+        # leader_admin_password etc. for idempotency probes.
+        try:
+            json_output['enterprise'] = enterprise  # noqa: F821 — set above unless load_json failed
+            json_output['enterprise_built'] = enterprise_built  # noqa: F821
+        except NameError:
+            pass
+        json_output["setup-end_time"] = str(datetime.now())
+        json_output["setup-failed"] = True
+        rc = 1
 
-    with open("post-deploy-output.json", "w") as f:
-        json.dump(json_output, f)
+    # Always write post-deploy-output.json so a re-run can see the partial
+    # state (notably: setup_domains.domain_leaders with admin_pass), which the
+    # idempotency probes rely on.
+    try:
+        with open("post-deploy-output.json", "w") as f:
+            json.dump(json_output, f)
+    except Exception as e:
+        print(f"[WARN] Could not write post-deploy-output.json: {e}")
 
-    return 0
+    return rc
 
 
 if __name__ == '__main__':
