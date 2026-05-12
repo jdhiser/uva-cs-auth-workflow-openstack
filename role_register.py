@@ -68,11 +68,44 @@ def tune_sshd_settings(control_ip: str, user: str, password: str):
     MaxStartups / MaxAuthTries throttles, which manifest as "Error reading
     SSH protocol banner" and force minutes of backoff for no good reason.
 
-    The sshd restart is spawned as a detached cmd.exe so it doesn't kill our
-    own SSH session mid-write; by the time anything next tries to connect,
-    sshd is back up with the new config.
+    Idempotent: reads sshd_config first, only rewrites + restarts sshd if
+    any value is missing or different. On a re-run where the desired values
+    are already present, prints "already set" and returns without touching
+    sshd. The actual sshd restart (when needed) is spawned as a detached
+    cmd.exe so it doesn't kill our own SSH session mid-write; by the time
+    anything next tries to connect, sshd is back up with the new config.
+
+    Returns dict with `stdout/stderr/exit_status` plus `applied` (True if
+    the script rewrote the config + restarted, False if it was already set).
     """
     cmd = r"""
+$cfg = "C:\ProgramData\ssh\sshd_config"
+$wanted = [ordered]@{
+    "MaxStartups"    = "1000:30:2000"
+    "MaxAuthTries"   = "1000000"
+    "LoginGraceTime" = "5m"
+}
+
+$current = @()
+if (Test-Path $cfg) { $current = Get-Content $cfg }
+
+$needsUpdate = $false
+foreach ($k in $wanted.Keys) {
+    $v = $wanted[$k]
+    $expected = "^\s*$([regex]::Escape($k))\s+$([regex]::Escape($v))\s*$"
+    $hit = $false
+    foreach ($line in $current) {
+        if ($line -match $expected) { $hit = $true; break }
+    }
+    if (-not $hit) { $needsUpdate = $true }
+}
+
+if (-not $needsUpdate) {
+    Write-Host "TUNE-SSHD-RESULT: already-set"
+    Write-Host "Done."
+    exit 0
+}
+
 function Set-SshdOption([string]$name, [string]$value) {
     $cfg = "C:\ProgramData\ssh\sshd_config"
     $lines = Get-Content $cfg
@@ -85,10 +118,9 @@ function Set-SshdOption([string]$name, [string]$value) {
     Set-Content -Path $cfg -Value $lines -Encoding ASCII
 }
 
-Set-SshdOption "MaxStartups"    "1000:30:2000"
-Set-SshdOption "MaxAuthTries"   "1000000"
-Set-SshdOption "LoginGraceTime" "5m"
+foreach ($k in $wanted.Keys) { Set-SshdOption $k $wanted[$k] }
 
+Write-Host "TUNE-SSHD-RESULT: applied"
 Write-Host "sshd_config updated; scheduling background sshd restart."
 
 Start-Process -WindowStyle Hidden cmd.exe -ArgumentList '/c "ping -n 4 127.0.0.1 >nul & net stop sshd & net start sshd"'
@@ -98,13 +130,15 @@ Write-Host "Done."
     try:
         shell = ShellHandler(control_ip, user, password, verbose=verbose, retries=2)
         stdout, stderr, exit_status = shell.execute_powershell_multiline(cmd, filename="tune-sshd")
-        return {"stdout": stdout, "stderr": stderr, "exit_status": exit_status}
+        applied = any("TUNE-SSHD-RESULT: applied" in line for line in (stdout or []))
+        return {"stdout": stdout, "stderr": stderr, "exit_status": exit_status, "applied": applied}
     except Exception as e:
         # If the detached restart raced us, our session may have been torn
         # down before the script returned cleanly. The config write is
-        # idempotent and runs first, so this is usually fine.
+        # idempotent and runs first, so this is usually fine — and we
+        # conservatively assume we applied (so the caller waits for sshd).
         print(f"  [INFO] sshd tune may have completed; session ended ({type(e).__name__}: {e})")
-        return {}
+        return {"applied": True}
 
 
 def confirm_domain_member(host: str, domain_name: str, leader_admin_password: str) -> bool:
@@ -163,6 +197,19 @@ def register_windows_instance(obj):
         print(f"  [WARN] Local admin SSH failed on {name} ({control_ipv4_addr}); no domain creds available to confirm state. Skipping register.")
         return {"skipped_reason": "no_domain_creds", "node_details": obj}
 
+    # Tune sshd BEFORE the rename / license SSH operations, so any per-
+    # connection transients (banner errors from sshd-session.exe spawn flakiness
+    # on freshly-booted win10, MaxStartups drops under burst load) hit the
+    # relaxed limits and shorter recovery, not the defaults. Idempotent: the
+    # PS script no-ops if sshd_config already has the desired values, so a
+    # re-run on an already-tuned host is essentially free (no sshd restart).
+    sshd_tune = tune_sshd_settings(control_ipv4_addr, user, password)
+    if sshd_tune.get("applied"):
+        # The detached cmd.exe pings ~3 s, then stops + starts sshd. Wait
+        # past that so the next SSH lands on the new sshd, not a dying one.
+        print(f"  Waiting for sshd restart on {name} ({control_ipv4_addr})...")
+        time.sleep(10)
+
     game_rename = do_rename_adapter(control_ipv4_addr, user, password, game_ipv4_addr, "game-adapter", 10)
     control_rename = ""
     if not game_ipv4_addr == control_ipv4_addr:
@@ -180,8 +227,6 @@ def register_windows_instance(obj):
     except Exception:
         print("Could not connect with credentials to register windows, already domain-joined?")
         return {}
-
-    sshd_tune = tune_sshd_settings(control_ipv4_addr, user, password)
 
     return {
         "node_details": obj,

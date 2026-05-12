@@ -6,3 +6,4 @@ project1-rc
 *.swp
 /*.json
 tmp
+.claude
