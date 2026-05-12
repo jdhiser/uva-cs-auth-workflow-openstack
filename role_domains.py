@@ -1000,6 +1000,33 @@ def setup_root_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_deta
             }}
         }}
 
+        # Bind the template list now, regardless of whether we just installed
+        # or skipped (already-installed). Without this, the Root CA's
+        # CertSvc lazily settles on its templates from AD — `_wait_for_root_pki_ready`
+        # on the deployer side can spin for many minutes waiting for
+        # `certutil -catemplates` to enumerate SubCA. By Restart-Service'ing
+        # CertSvc and explicitly assigning the templates here, the next
+        # `-catemplates` call from the deployer returns the desired list
+        # almost immediately.
+        Restart-Service CertSvc -Force
+
+        # Restart-Service returns when SCM reports Running, but CertSvc still
+        # does internal init (config + ESE DB + RPC bind) before it answers
+        # certutil calls. Poll `certutil -ping` until exit 0 — that's the
+        # real "service is responsive" signal — instead of guessing a sleep.
+        $deadline = (Get-Date).AddSeconds(120)
+        do {{
+            & certutil -ping 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) {{ break }}
+            Start-Sleep -Seconds 2
+        }} while ((Get-Date) -lt $deadline)
+        if ($LASTEXITCODE -ne 0) {{
+            Write-Warning "CertSvc did not respond to -ping within 120s; -SetCATemplates may race."
+        }}
+
+        certutil -SetCATemplates +SubCA,Administrator,User,DomainController,WebServer,Machine,KerberosAuthentication,DirectoryEmailReplication
+        certutil -pulse
+
         # debug output
         Get-ChildItem C:\Windows\System32\CertSrv\CertEnroll | Where-Object Name -like "*RootCA*"
 
