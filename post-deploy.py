@@ -38,15 +38,15 @@ def extract_creds(enterprise_built, name):
     addresses = details['addresses']
     control_ipv4_addr = addresses[0]['addr']
     game_ipv4_addr = addresses[-1]['addr']
-    print("  ipv4 addr (control): " + str(control_ipv4_addr))
-    print("  ipv4 addr (game): " + str(game_ipv4_addr))
+    print(f"  [{name}] ipv4 addr (control): {control_ipv4_addr}")
+    print(f"  [{name}] ipv4 addr (game): {game_ipv4_addr}")
 
     if 'password' in details:
         password = details['password']
-        print("  password: " + str(password))
+        print(f"  [{name}] password: {password}")
     else:
         password = None
-        print("  password: No password set")
+        print(f"  [{name}] password: No password set")
     return control_ipv4_addr, game_ipv4_addr, password
 
 

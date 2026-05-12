@@ -96,7 +96,7 @@ def deploy_forest(cloud_config, name, control_ipv4_addr, game_ipv4_addr, passwor
 
     user = 'Administrator'
     domain_name = domain + '.' + cloud_config['enterprise_url']
-    print("  Setting safe-mode password for domain to " + password)
+    print(f"  [{name}] Setting safe-mode password for domain to {password}")
 
     adcmd = (f"""
         net user administrator {password}
@@ -143,18 +143,18 @@ def deploy_forest(cloud_config, name, control_ipv4_addr, game_ipv4_addr, passwor
     while not status_received and attempts < 60:
         try:
             attempts += 1
-            print("  Waiting for reboot of domain controller leader with ip={}.".format(control_ipv4_addr))
+            print(f"  [{name}] Waiting for reboot of domain controller leader with ip={control_ipv4_addr}.")
             shell = ShellHandler(control_ipv4_addr, user, password)
             stdout2, stderr2, exit_status2 = shell.execute_powershell("get-addomain", verbose=verbose)
             output = str(stdout2) + str(stderr2)
             if f'DNSRoot                            : {domain_name}' not in output:
-                print("  Connected, but did not get domain info.  Trying again...")
-                print(f"  output={output}")
+                print(f"  [{name}] Connected, but did not get domain info.  Trying again...")
+                print(f"  [{name}] output={output}")
                 # server is starting up, try again.
                 status_received = False
                 time.sleep(10)
             else:
-                print("  Success:  Domain detected!")
+                print(f"  [{name}] Success:  Domain detected!")
                 status_received = True
         except (
             paramiko.ssh_exception.SSHException,
@@ -162,17 +162,17 @@ def deploy_forest(cloud_config, name, control_ipv4_addr, game_ipv4_addr, passwor
             ConnectionResetError,
             TimeoutError
         ) as e:
-            print(f"  Exception {type(e).__name__} detected, trying again...")
+            print(f"  [{name}] Exception {type(e).__name__} detected, trying again...")
             time.sleep(10)
             pass
 
     if 'ReplicaDirectoryServers' not in str(stdout2):
-        print("Stdout2: " + str(stdout2))
-        print("Stderr2: " + str(stderr2))
+        print(f"[{name}] Stdout2: " + str(stdout2))
+        print(f"[{name}] Stderr2: " + str(stderr2))
         errstr = 'Cannot get domain information from ' + name
         raise RuntimeError(errstr)
 
-    print("  Reboot Complete.  Waiting for domain controller service to start.")
+    print(f"  [{name}] Reboot Complete.  Waiting for domain controller service to start.")
     # wait for domain controller to be up/ready.
 
     remove_control_network_from_dns_cmd = (f"""
@@ -203,9 +203,9 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
     leader_admin_password = leader_details['admin_pass']
     game_leader_ip = leader_details['game_addr'][0]
     control_leader_ip = leader_details['control_addr'][0]
-    print('  domain-controller leader (control): ' + control_leader_ip)
-    print('  domain-controller leader (game): ' + game_leader_ip)
-    print('  domain-controller password: ' + leader_admin_password)
+    print(f'  [{name}] domain-controller leader (control): {control_leader_ip}')
+    print(f'  [{name}] domain-controller leader (game): {game_leader_ip}')
+    print(f'  [{name}] domain-controller password: {leader_admin_password}')
 
     adcmd = """
         wget https://www.python.org/ftp/python/3.12.1/python-3.12.1-embed-amd64.zip -Outfile python.zip
@@ -248,7 +248,7 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
     already_promoted = False
     for install_attempt in range(1, max_install_attempts + 1):
         try:
-            print(f"  Trying to install AD and join domain on {name} (attempt {install_attempt}/{max_install_attempts})")
+            print(f"  [{name}] Trying to install AD and join domain (attempt {install_attempt}/{max_install_attempts})")
             shell = ShellHandler(control_ipv4_addr, user, password, retries=2)
             stdout2, stderr2, exit_status2 = shell.execute_powershell_multiline(adcmd, filename="ad-install.ps1", verbose=verbose)
             stdout.append(stdout2)
@@ -261,13 +261,13 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
                 # Local admin password no longer authenticates — node was likely
                 # already promoted on a prior run. Skip install and reboot, and
                 # let the verify step below confirm with leader_admin_password.
-                print(f"  Local admin SSH refused on {name} ({type(e).__name__}): {e}")
-                print(f"  Assuming {name} was already promoted; skipping install and reboot.")
+                print(f"  [{name}] Local admin SSH refused ({type(e).__name__}): {e}")
+                print(f"  [{name}] Assuming already promoted; skipping install and reboot.")
                 already_promoted = True
                 break
-            print(f"  Install AD attempt {install_attempt} failed: {type(e).__name__}: {e}")
+            print(f"  [{name}] Install AD attempt {install_attempt} failed: {type(e).__name__}: {e}")
             if install_attempt < max_install_attempts:
-                print("  Sleeping 30s before retrying install...")
+                print(f"  [{name}] Sleeping 30s before retrying install...")
                 time.sleep(30)
 
     if not install_succeeded and not already_promoted:
@@ -275,17 +275,17 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
         raise RuntimeError(errstr)
 
     if install_succeeded:
-        print(f"  Trying to finalize domain join of {name}")
+        print(f"  [{name}] Trying to finalize domain join")
         try:
             shell = ShellHandler(control_ipv4_addr, user, password, retries=1)
             shell.execute_powershell('Restart-computer -force', verbose=verbose)
         except Exception as e:
             # Socket errors during reboot are expected — the SSH session dies as the host goes down.
-            print(f"  Reboot triggered (received expected exception {type(e).__name__}: {e})")
+            print(f"  [{name}] Reboot triggered (received expected exception {type(e).__name__}: {e})")
     else:
-        print(f"  Skipping reboot for {name} (already promoted)")
+        print(f"  [{name}] Skipping reboot (already promoted)")
 
-    print(f"  Waiting for domain join confirmation from {name}")
+    print(f"  [{name}] Waiting for domain join confirmation")
     time.sleep(10)
     status_received = False
     attempts = 0
@@ -295,11 +295,11 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
         try:
             attempts += 1
             remaining = int(verify_deadline - time.time())
-            print(f"  Verifying AD startup on {name} (attempt {attempts}, {remaining}s remaining)")
+            print(f"  [{name}] Verifying AD startup (attempt {attempts}, {remaining}s remaining)")
             shell = ShellHandler(control_ipv4_addr, user, leader_admin_password, retries=1)
             stdout2, stderr2, exit_status2 = shell.execute_powershell("get-addomain", verbose=verbose)
             if 'ReplicaDirectoryServers' not in str(stdout2):
-                print("Connected, waiting for AD to start up.")
+                print(f"  [{name}] Connected, waiting for AD to start up.")
                 time.sleep(10)
                 continue
             status_received = True
@@ -311,22 +311,22 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
             paramiko.ssh_exception.NoValidConnectionsError,
             TimeoutError
         ) as e:
-            print(f"  SSH exception {type(e).__name__} handled, retrying: {e}")
+            print(f"  [{name}] SSH exception {type(e).__name__} handled, retrying: {e}")
             time.sleep(10)
 
     if "stdout2" not in locals() or 'ReplicaDirectoryServers' not in str(stdout2):
         if "stdout" in locals():
-            print("add-dc-stdout:" + str(stdout))
+            print(f"[{name}] add-dc-stdout: {stdout}")
         if "stderr" in locals():
-            print("add-dc-stderr:" + str(stderr))
+            print(f"[{name}] add-dc-stderr: {stderr}")
         if "stdout2" in locals():
-            print("verify-stdout:" + str(stdout2))
+            print(f"[{name}] verify-stdout: {stdout2}")
         if "stderr2" in locals():
-            print("verify-stderr:" + str(stderr2))
+            print(f"[{name}] verify-stderr: {stderr2}")
         errstr = 'Cannot get domain information from ' + name
         raise RuntimeError(errstr)
 
-    print(f"  Reboot of {name} complete, domain join verified!")
+    print(f"  [{name}] Reboot complete, domain join verified!")
 
     return {
         "add_domain_results": {"name": name, "control_addr": control_ipv4_addr, "game_addr": game_ipv4_addr, "password": password, "domain": domain},
@@ -479,10 +479,10 @@ Set-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\
     if stdout2 == "":
         raise RuntimeError("Could not verify machine {} was on domain: unable to connect".format(name))
     if not 'the domain is {}'.format(domain_name.upper()) in str(stdout2):
-        print("join_domain_stdout:" + str(stdout))
-        print("join_domain_stderr:" + str(stderr))
-        print("verify_domain_stdout:" + str(stdout2))
-        print("verify_domain_stderr:" + str(stderr2))
+        print(f"[{name}] join_domain_stdout: {stdout}")
+        print(f"[{name}] join_domain_stderr: {stderr}")
+        print(f"[{name}] verify_domain_stdout: {stdout2}")
+        print(f"[{name}] verify_domain_stderr: {stderr2}")
         errstr = 'Cannot get domain information from ' + name
         raise RuntimeError(errstr)
 
@@ -797,17 +797,16 @@ EOT
         attempts += 1
         try:
             admin_user = 'administrator@' + fqdn_domain_name
-            print("  Trying to verify domain-join of {}... creds={}:{}:{}".format(
-                name, control_ipv4_addr, admin_user, leader_admin_password))
+            print(f"  [{name}] Trying to verify domain-join... creds={control_ipv4_addr}:{admin_user}:{leader_admin_password}")
             shell = ShellHandler(control_ipv4_addr, admin_user, leader_admin_password, timeout=30)
             stdout2, stderr2, exit_status2 = shell.execute_cmd('realm list', verbose=verbose)
             if not 'realm-name: {}'.format(fqdn_domain_name.upper()) in str(stdout2):
-                print(f"  Realm list did not return fqdn ({fqdn_domain_name}), retrying.")
+                print(f"  [{name}] Realm list did not return fqdn ({fqdn_domain_name}), retrying.")
                 time.sleep(5)
             else:
                 status_received = True
         except Exception:
-            print(f"  Waiting domain join to complete for ip={control_ipv4_addr}.")
+            print(f"  [{name}] Waiting domain join to complete for ip={control_ipv4_addr}.")
 
             time.sleep(5)
             pass
@@ -819,10 +818,10 @@ EOT
         raise RuntimeError(errstr)
 
     if stdout2 is None or not 'realm-name: {}'.format(fqdn_domain_name.upper()) in str(stdout2):
-        print("join_domain_stdout:" + str(stdout))
-        print("join_domain_stderr:" + str(stderr))
-        print("verify_domain_stdout:" + str(stdout2))
-        print("verify_domain_stderr:" + str(stderr2))
+        print(f"[{name}] join_domain_stdout: {stdout}")
+        print(f"[{name}] join_domain_stderr: {stderr}")
+        print(f"[{name}] verify_domain_stdout: {stdout2}")
+        print(f"[{name}] verify_domain_stderr: {stderr2}")
         errstr = 'Cannot detect domain information from ' + name
         if stdout2 is None:
             errstr += ". Could not connect"
