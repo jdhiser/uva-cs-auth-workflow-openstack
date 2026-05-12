@@ -277,19 +277,8 @@ def setup_moodle_idps_part2(cloud_config, enterprise, enterprise_built, only):
     return ret
 
 
-def deploy_domain_controllers(cloud_config, enterprise, enterprise_built, only):
-    """
-    Sets up Active Directory forests, domain controllers, and certificate servers (root and subordinate).
-    Also links subordinate certificate authorities to their respective root CAs.
-    Also sets up an IIS server.
-    """
-
-    os.makedirs("tmp", exist_ok=True)
-
-    ret = {}
-    leader_details = {}
-
-    # Step 1: Deploy AD forests (root DCs)
+def _deploy_forest_leaders(cloud_config, enterprise, enterprise_built, only, leader_details, ret):
+    """Phase 1: deploy AD forest roots (e.g. dc1). Must complete before anything else."""
     forest_leaders = list(filter(lambda x: 'domain_controller_leader' in x['roles'], enterprise['nodes']))
     for leader in forest_leaders:
         name = leader['name']
@@ -308,7 +297,9 @@ def deploy_domain_controllers(cloud_config, enterprise, enterprise_built, only):
         }
         ret[f"forest_setup_{name}"] = results
 
-    # Step 2: Add additional domain controllers (replicas)
+
+def _deploy_followers(cloud_config, enterprise, enterprise_built, only, leader_details, ret):
+    """Add additional domain controllers (dc2, ...). Depends on forest leader."""
     followers = list(filter(lambda x: 'domain_controller' in x['roles'], enterprise['nodes']))
     for follower in followers:
         name = follower['name']
@@ -325,7 +316,9 @@ def deploy_domain_controllers(cloud_config, enterprise, enterprise_built, only):
         leader_details[domain]['game_addr'].append(game_ipv4_addr)
         ret[f"additional_dc_setup_{name}"] = results
 
-    # Step 3: Deploy root CAs
+
+def _deploy_root_cas(cloud_config, enterprise, enterprise_built, only, leader_details, ret):
+    """Deploy root CAs. Depends on forest leader. Writes root_certification_server/root_ca_name."""
     root_cas = list(filter(lambda x: 'ad-root-certificate-server' in x['roles'], enterprise['nodes']))
     for node in root_cas:
         name = node['name']
@@ -342,7 +335,9 @@ def deploy_domain_controllers(cloud_config, enterprise, enterprise_built, only):
         leader_details[domain]["root_ca_name"] = name
         ret[f"setup_root_adcs_{name}"] = results
 
-    # Step 4: Deploy subordinate CAs
+
+def _deploy_sub_cas(cloud_config, enterprise, enterprise_built, only, leader_details, ret):
+    """Deploy subordinate CAs and link them to root CAs. Depends on root_ca for the domain."""
     sub_cas = list(filter(lambda x: 'ad-subordinate-certificate-server' in x['roles'], enterprise['nodes']))
     for node in sub_cas:
         name = node['name']
@@ -375,7 +370,9 @@ def deploy_domain_controllers(cloud_config, enterprise, enterprise_built, only):
         leader_details[domain]["subordinate_certification_server"]["game_addr"].append(game_ipv4_addr)
         ret[f"setup_subordinate_adcs_{name}"] = results
 
-    # Step 5: Deploy IIS servers
+
+def _deploy_iis(cloud_config, enterprise, enterprise_built, only, leader_details, ret):
+    """Deploy IIS servers. Joins the domain and requests a cert from the SubCA, so depends on SubCA."""
     iis_servers = list(filter(lambda x: 'iis' in x['roles'], enterprise['nodes']))
     for node in iis_servers:
         name = node['name']
@@ -388,6 +385,35 @@ def deploy_domain_controllers(cloud_config, enterprise, enterprise_built, only):
         else:
             results = {"msg": "skipping setup of IIS server as requested."}
         ret[f"setup_iis_{name}"] = results
+
+
+def deploy_domain_controllers(cloud_config, enterprise, enterprise_built, only):
+    """
+    Sets up Active Directory forests, domain controllers, and certificate servers (root and subordinate).
+    Also links subordinate certificate authorities to their respective root CAs.
+    Also sets up an IIS server.
+
+    Dependency graph (per domain):
+
+        forest leader (dc1)
+            ├──> follower DC (dc2)
+            └──> root CA  ──> subordinate CA  ──> IIS
+
+    Currently we still run the steps in their historical order — extracted into
+    helper functions to make a follow-up parallelization (followers branch and
+    CA→IIS branch concurrently after forest leader) a small diff.
+    """
+
+    os.makedirs("tmp", exist_ok=True)
+
+    ret = {}
+    leader_details = {}
+
+    _deploy_forest_leaders(cloud_config, enterprise, enterprise_built, only, leader_details, ret)
+    _deploy_followers(cloud_config, enterprise, enterprise_built, only, leader_details, ret)
+    _deploy_root_cas(cloud_config, enterprise, enterprise_built, only, leader_details, ret)
+    _deploy_sub_cas(cloud_config, enterprise, enterprise_built, only, leader_details, ret)
+    _deploy_iis(cloud_config, enterprise, enterprise_built, only, leader_details, ret)
 
     ret["domain_leaders"] = leader_details
     return ret
