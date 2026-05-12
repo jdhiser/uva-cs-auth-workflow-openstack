@@ -395,13 +395,22 @@ def deploy_domain_controllers(cloud_config, enterprise, enterprise_built, only):
 
     Dependency graph (per domain):
 
-        forest leader (dc1)
-            ├──> follower DC (dc2)
-            └──> root CA  ──> subordinate CA  ──> IIS
+        forest leader (dc1)   [phase 1]
+            ├──> follower DC (dc2)                          [phase 2 branch A]
+            └──> root CA  ──> subordinate CA  ──> IIS       [phase 2 branch B]
 
-    Currently we still run the steps in their historical order — extracted into
-    helper functions to make a follow-up parallelization (followers branch and
-    CA→IIS branch concurrently after forest leader) a small diff.
+    Phase 2's two branches run concurrently. dc2 typically takes ~15-20 min
+    (Install-ADDSDomainController + reboot + AD startup); the CA→IIS chain
+    takes ~30-40 min. Running them in parallel saves the shorter branch's
+    duration — roughly 15-20 min off pd1's critical path.
+
+    Thread safety: branches mutate `leader_details[domain]` and `ret` on
+    non-overlapping keys (followers touches control_addr/game_addr lists +
+    additional_dc_setup_*; the CA/IIS chain touches
+    root_certification_server/subordinate_certification_server/root_ca_name +
+    setup_root_adcs_*/setup_subordinate_adcs_*/setup_iis_*). dict-key
+    operations under the GIL are atomic enough here. We also use
+    backend="threading" so the worker processes share these dicts directly.
     """
 
     os.makedirs("tmp", exist_ok=True)
@@ -410,10 +419,23 @@ def deploy_domain_controllers(cloud_config, enterprise, enterprise_built, only):
     leader_details = {}
 
     _deploy_forest_leaders(cloud_config, enterprise, enterprise_built, only, leader_details, ret)
-    _deploy_followers(cloud_config, enterprise, enterprise_built, only, leader_details, ret)
-    _deploy_root_cas(cloud_config, enterprise, enterprise_built, only, leader_details, ret)
-    _deploy_sub_cas(cloud_config, enterprise, enterprise_built, only, leader_details, ret)
-    _deploy_iis(cloud_config, enterprise, enterprise_built, only, leader_details, ret)
+
+    def branch_followers():
+        _deploy_followers(cloud_config, enterprise, enterprise_built, only, leader_details, ret)
+
+    def branch_ca_iis():
+        _deploy_root_cas(cloud_config, enterprise, enterprise_built, only, leader_details, ret)
+        _deploy_sub_cas(cloud_config, enterprise, enterprise_built, only, leader_details, ret)
+        _deploy_iis(cloud_config, enterprise, enterprise_built, only, leader_details, ret)
+
+    if use_parallel:
+        Parallel(n_jobs=2, backend="threading")([
+            delayed(branch_followers)(),
+            delayed(branch_ca_iis)(),
+        ])
+    else:
+        branch_followers()
+        branch_ca_iis()
 
     ret["domain_leaders"] = leader_details
     return ret
