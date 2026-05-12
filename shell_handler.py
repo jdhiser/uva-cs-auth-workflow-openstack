@@ -305,27 +305,41 @@ class ShellHandler:
         stderr_buf = ""
 
         while not channel.exit_status_ready() or channel.recv_ready() or channel.recv_stderr_ready():
+            got_data = False
+
             # Read stdout if ready
             if channel.recv_ready():
                 data = channel.recv(1024).decode("utf-8", errors="replace")
-                stdout_buf += data
-                while '\n' in stdout_buf:
-                    line, stdout_buf = stdout_buf.split('\n', 1)
-                    stdout_lines.append(line + '\n')
-                    if verbose or self.verbose:
-                        print(line)
+                if data:
+                    got_data = True
+                    stdout_buf += data
+                    while '\n' in stdout_buf:
+                        line, stdout_buf = stdout_buf.split('\n', 1)
+                        stdout_lines.append(line + '\n')
+                        if verbose or self.verbose:
+                            print(line)
 
             # Read stderr if ready
             if channel.recv_stderr_ready():
                 data = channel.recv_stderr(1024).decode("utf-8", errors="replace")
-                stderr_buf += data
-                while '\n' in stderr_buf:
-                    line, stderr_buf = stderr_buf.split('\n', 1)
-                    stderr_lines.append(line + '\n')
-                    if verbose or self.verbose:
-                        print(line)
+                if data:
+                    got_data = True
+                    stderr_buf += data
+                    while '\n' in stderr_buf:
+                        line, stderr_buf = stderr_buf.split('\n', 1)
+                        stderr_lines.append(line + '\n')
+                        if verbose or self.verbose:
+                            print(line)
 
-            time.sleep(0.1)
+            # Only back off when the remote has nothing for us right now. While
+            # data is flowing (chatty scripts, large Expand-Archive trace
+            # output, etc.), this loop pulls 1 KB / iter at memory speed
+            # rather than ~10 KB/s. On the worst observed script (the
+            # win10 install_human_windows that produced ~16 MB of PSDebug
+            # trace), the old 100 ms-per-iter sleep cost ~25 min of wall-time
+            # purely to drain stdout; this change drops that to seconds.
+            if not got_data:
+                time.sleep(0.1)
 
         # Flush any remaining partial lines
         if stdout_buf:
@@ -480,11 +494,20 @@ Set-PSDebug -Trace 0
         tmp_path = f"/tmp/{basename}.sh"
         sudo = "sudo " if use_sudo else ""
 
+        # Prepend a PS4 setting so every `set -x` traced line is prefixed with
+        # a wall-clock time. Without this the trace shows what ran but not
+        # when, and a multi-minute `apt install` looks identical to a 5-second
+        # one. Cheap, automatic for every bash caller.
+        timestamped_contents = (
+            "export PS4='+ $(date \"+%H:%M:%S\") '\n"
+            + script_contents
+        )
+
         # Ensure the target directory exists
         self.execute_cmd(f"{sudo}mkdir -p '{script_dir}'", verbose=verbose)
 
         # Upload the script to a temporary user-writable location
-        self.put_file_from_string(tmp_path, script_contents)
+        self.put_file_from_string(tmp_path, timestamped_contents)
 
         # Move the script to the final location if different
         if tmp_path != script_path:

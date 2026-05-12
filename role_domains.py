@@ -99,12 +99,16 @@ def deploy_forest(cloud_config, name, control_ipv4_addr, game_ipv4_addr, passwor
     print(f"  [{name}] Setting safe-mode password for domain to {password}")
 
     adcmd = (f"""
+        function ts {{ param([string]$msg) Write-Host "[$(Get-Date -Format 'HH:mm:ss')] $msg" }}
+        ts "BEGIN deploy_forest ({name})"
+
         net user administrator {password}
         net user administrator /passwordreq:yes
         reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\TimeProviders\\NtpServer /v Enabled /t REG_DWORD /d 1 /f
         reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\Parameters /v Type /t REG_SZ /d NTP /f
         reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\Config /v AnnounceFlags /t REG_DWORD /d 5 /f
         tzutil /s 'Eastern Standard Time'
+        ts "Step: w32time config"
         w32tm /config /manualpeerlist:'pool.ntp.org,0x1' /syncfromflags:manual /reliable:yes /update
         net stop w32time
         net start w32time
@@ -114,10 +118,15 @@ def deploy_forest(cloud_config, name, control_ipv4_addr, game_ipv4_addr, passwor
         net start w32time
         w32tm /resync
         w32tm /query /status
+        ts "Step: Install-WindowsFeature AD-Domain-Services (BEGIN)"
         Install-windowsfeature AD-domain-services
+        ts "Step: Install-WindowsFeature AD-Domain-Services (END)"
         Import-Module ADDSDeployment
         $secure=ConvertTo-SecureString -asplaintext -string {domain_safe_mode_password} -force
+        ts "Step: Install-ADDSForest (BEGIN)"
         Install-ADDSForest -domainname {domain_name} -SafeModeAdministratorPassword $secure -verbose -NoRebootOnCompletion:$true -Force:$true
+        ts "Step: Install-ADDSForest (END)"
+        ts "Step: install embedded Python (BEGIN)"
         wget https://www.python.org/ftp/python/3.12.1/python-3.12.1-embed-amd64.zip -Outfile python.zip
         Expand-Archive -force .\\python.zip
         mv python c:\\
@@ -125,6 +134,8 @@ def deploy_forest(cloud_config, name, control_ipv4_addr, game_ipv4_addr, passwor
         $oldpath = (Get-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Control\\Session Manager\\Environment' -Name PATH).path
         $newpath = "$oldpath;C:\\python"
         Set-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Control\\Session Manager\\Environment' -Name PATH -Value $newpath
+        ts "Step: install embedded Python (END)"
+        ts "END deploy_forest ({name})"
         """)
 
     if verbose:
@@ -208,10 +219,16 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
     print(f'  [{name}] domain-controller password: {leader_admin_password}')
 
     adcmd = """
+        function ts { param([string]$msg) Write-Host "[$(Get-Date -Format 'HH:mm:ss')] $msg" }
+        ts "BEGIN add_domain_controller"
+
+        ts "Step: install embedded Python (BEGIN)"
         wget https://www.python.org/ftp/python/3.12.1/python-3.12.1-embed-amd64.zip -Outfile python.zip
         Expand-Archive -force .\\python.zip
         mv python c:\\
         icacls "c:\\python" /grant:r "users:(RX)" /C
+        ts "Step: install embedded Python (END)"
+        ts "Step: w32time config (BEGIN)"
         reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\TimeProviders\\NtpServer /v Enabled /t REG_DWORD /d 1 /f
         reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\Parameters /v Type /t REG_SZ /d NTP /f
         reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\W32Time\\Config /v AnnounceFlags /t REG_DWORD /d 5 /f
@@ -225,18 +242,25 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
         net start w32time
         w32tm /resync
         w32tm /query /status
+        ts "Step: w32time config (END)"
+        ts "Step: Install-WindowsFeature AD-Domain-Services (BEGIN)"
         Install-windowsfeature AD-domain-services
+        ts "Step: Install-WindowsFeature AD-Domain-Services (END)"
         Import-Module ADDSDeployment
         Set-DnsClientServerAddress -serveraddress ('{}') -interfacealias 'game-adapter'
         Set-DnsClientServerAddress -serveraddress ('{}') -interfacealias 'control-adapter'
         $passwd = convertto-securestring -AsPlainText -Force -String '{}'
         $cred = new-object -typename System.Management.Automation.PSCredential -argumentlist '{}\\administrator',$passwd
         $secure=ConvertTo-SecureString -asplaintext -string '{}' -force
+        ts "Step: pre-Install-ADDSDomainController 60s sleep"
         sleep 60
+        ts "Step: Install-ADDSDomainController (BEGIN)"
         Install-ADDSDomainController -DomainName {} -SafeModeAdministratorPassword $secure -verbose -NoRebootOnCompletion:$true  -confirm:$false -credential $cred
+        ts "Step: Install-ADDSDomainController (END)"
         $oldpath = (Get-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Control\\Session Manager\\Environment' -Name PATH).path
         $newpath = "$oldpath;C:\\python"
         Set-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Control\\Session Manager\\Environment' -Name PATH -Value $newpath
+        ts "END add_domain_controller"
     """.format(game_leader_ip, game_leader_ip, leader_admin_password, domain_name, domain_safe_mode_password, domain_name)
 
     stdout = []
@@ -376,6 +400,9 @@ def join_domain_windows(name, leader_admin_password, control_ipv4_addr, game_ipv
 
     user = 'Administrator'
     cmd = f"""
+function ts {{ param([string]$msg) Write-Host "[$(Get-Date -Format 'HH:mm:ss')] $msg" }}
+ts "BEGIN join-domain ({name})"
+
 $passwd = convertto-securestring -AsPlainText -Force -String {leader_admin_password}
 $cred = new-object -typename System.Management.Automation.PSCredential -argumentlist 'administrator@{domain_name}',$passwd
 Set-DnsClientServerAddress -serveraddress ({domain_ips}) -interfacealias 'game-adapter'
@@ -383,16 +410,17 @@ Set-DnsClientServerAddress -serveraddress ({domain_ips}) -interfacealias 'game-a
 # Retry Add-Computer up to 3 times
 $maxRetries = 5
 $retryDelay = 60
+ts "Step: Add-Computer loop (BEGIN)"
 for ($i = 1; $i -le $maxRetries; $i++) {{
     try {{
-        Write-Host "Attempt $i to join domain {fqdn_domain_name}..."
+        ts "Attempt $i to join domain {fqdn_domain_name}..."
         Add-Computer -Credential $cred -DomainName {fqdn_domain_name} -ErrorAction Stop
-        Write-Host "Successfully joined the domain."
+        ts "Successfully joined the domain."
         break
     }} catch {{
         Write-Warning "Attempt $i failed: $($_.Exception.Message)"
         if ($i -lt $maxRetries) {{
-            Write-Host "Waiting $retryDelay seconds before retry..."
+            ts "Waiting $retryDelay seconds before retry..."
             Start-Sleep -Seconds $retryDelay
         }} else {{
             Write-Error "All attempts to join domain failed."
@@ -400,7 +428,9 @@ for ($i = 1; $i -le $maxRetries; $i++) {{
         }}
     }}
 }}
+ts "Step: Add-Computer loop (END)"
 
+ts "Step: install embedded Python (BEGIN)"
 if (Test-Path 'C:\\Python') {{
     Remove-Item -Path 'C:\\Python' -Recurse -Force
 }}
@@ -412,6 +442,8 @@ icacls 'c:\\python' /grant:r "users:(RX)" /C
 $oldpath = (Get-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Control\\Session Manager\\Environment' -Name PATH).path
 $newpath = "$oldpath;C:\\python"
 Set-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Control\\Session Manager\\Environment' -Name PATH -Value $newpath
+ts "Step: install embedded Python (END)"
+ts "END join-domain ({name})"
 """
 
     print(f"  {name} is joining an existing domain: {domain_name}")

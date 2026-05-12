@@ -53,6 +53,13 @@ def install_human_windows(node, user, control_ipv4_addr, password, cloud_config)
     ps = f'''
 $ErrorActionPreference = "Stop"
 
+# --- Timestamp helper ---
+# Set-PSDebug -Trace 1 (enabled by the SSH wrapper) doesn't add timestamps.
+# Sprinkle ts "..." calls before/after each major step so the log shows when
+# each phase started/ended. Pairs with bash's PS4='+ $(date +%H:%M:%S)'.
+function ts {{ param([string]$msg) Write-Host "[$(Get-Date -Format 'HH:mm:ss')] $msg" }}
+ts "BEGIN install_human_windows"
+
 # --- Config ---
 $PythonDir = "C:\\python"
 $PythonExe = Join-Path $PythonDir "python.exe"
@@ -86,6 +93,7 @@ if (-not ($env:PATH -split ";" | Where-Object {{ $_ -eq $ScriptsDir }}))
 }}
 
 # --- Bootstrap pip with get-pip.py ---
+ts "Step: bootstrap pip"
 if (-not (Test-Path -LiteralPath (Join-Path $ScriptsDir "pip.exe")))
 {{
     Write-Host "[*] Fetching get-pip.py"
@@ -100,7 +108,7 @@ else
 }}
 
 # --- Upgrade toolchain ---
-Write-Host "[*] Upgrading pip/setuptools/wheel"
+ts "Step: pip install --upgrade pip setuptools wheel"
 & (Join-Path $ScriptsDir "pip.exe") install --upgrade pip setuptools wheel
 
 # --- Expand plugin and install its requirements ---
@@ -158,13 +166,16 @@ else
     Write-Host "[*] Path config already includes 'import site' and '.'"
 }}
 
+ts "Step: python -m pip install --upgrade pip setuptools wheel"
 python -m pip install --upgrade pip setuptools wheel
 
+ts "Step: Expand-Archive plugin zip -> $HumanRoot"
 Write-Host "[*] Unpacking plugin: $PluginZip -> $HumanRoot"
 New-Item -ItemType Directory -Force -Path $HumanRoot | Out-Null
 # Clean destination (but keep root folder) to allow re-runs
 Get-ChildItem -LiteralPath $HumanRoot -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 Expand-Archive -Path $PluginZip -DestinationPath $HumanRoot -Force
+ts "Step: Expand-Archive done"
 
 # --- Rewrite workflow URLs (Linux sed equivalent) ---
 function Replace-InFiles([string]$Root, [string]$Pattern, [string]$Replacement)
@@ -191,6 +202,7 @@ if (-not (Test-Path -LiteralPath $WorkflowsRoot))
     $WorkflowsRoot = $HumanRoot
 }}
 
+ts "Step: rewrite workflow URLs in $WorkflowsRoot"
 Replace-InFiles $WorkflowsRoot "castle\\.castle\\.os" "$Domain.$EnterpriseUrl"
 Replace-InFiles $WorkflowsRoot "castle\\.project1\\.os" "$Domain.$EnterpriseUrl"
 Replace-InFiles $WorkflowsRoot "castle\\.os" $EnterpriseUrl
@@ -200,8 +212,10 @@ Replace-InFiles $WorkflowsRoot "project1\\.os" $EnterpriseUrl
 $req = Get-ChildItem -LiteralPath $HumanRoot -Recurse -Filter requirements.txt -File -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($null -ne $req)
 {{
+    ts "Step: pip install -r $($req.FullName) (BEGIN)"
     Write-Host "[*] Installing dependencies from: $($req.FullName)"
     & (Join-Path $ScriptsDir "pip.exe") install -r $req.FullName
+    ts "Step: pip install -r requirements.txt (END)"
 }}
 else
 {{
@@ -209,6 +223,7 @@ else
 }}
 
 
+ts "Step: Install Chrome (BEGIN)"
 Write-Host "[*] Installing Chrome."
 $url = 'https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi'
 $msi = "$env:TEMP\\chrome_installer.msi"
@@ -217,6 +232,8 @@ Write-Host "Downloading Chrome from $url"
 (New-Object Net.WebClient).DownloadFile($url, $msi)
 Write-Host 'Installing via MSI...'
 Start-Process msiexec -ArgumentList "/i `"$msi`" /qn /norestart ALLUSERS=1" -Wait
+ts "Step: Install Chrome (END)"
+ts "END install_human_windows"
 
 Write-Host "[OK] Windows human install done."
 '''
