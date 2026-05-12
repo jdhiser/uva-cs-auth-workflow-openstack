@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import log_setup  # noqa: F401  -- patches print() to prefix wall-clock timestamps
 import logging
 import traceback
 import sys
@@ -317,7 +318,7 @@ def _deploy_followers(cloud_config, enterprise, enterprise_built, only, leader_d
         ret[f"additional_dc_setup_{name}"] = results
 
 
-def _deploy_root_cas(cloud_config, enterprise, enterprise_built, only, leader_details, ret):
+def _deploy_root_cas(cloud_config, enterprise, enterprise_built, only, leader_details, ret, skip_join=False):
     """Deploy root CAs. Depends on forest leader. Writes root_certification_server/root_ca_name."""
     root_cas = list(filter(lambda x: 'ad-root-certificate-server' in x['roles'], enterprise['nodes']))
     for node in root_cas:
@@ -326,7 +327,7 @@ def _deploy_root_cas(cloud_config, enterprise, enterprise_built, only, leader_de
         print(f"Setting up root certification server {name} in domain {domain}")
         control_ipv4_addr, game_ipv4_addr, password = extract_creds(enterprise_built, name)
         if only is None or name in only:
-            results = role_domains.setup_root_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_details[domain], cloud_config, enterprise, enterprise_built)
+            results = role_domains.setup_root_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_details[domain], cloud_config, enterprise, enterprise_built, skip_join=skip_join)
         else:
             results = {"msg": "skipping setup of root certification server as requested."}
         leader_details[domain].setdefault("root_certification_server", {"control_addr": [], "game_addr": []})
@@ -336,7 +337,7 @@ def _deploy_root_cas(cloud_config, enterprise, enterprise_built, only, leader_de
         ret[f"setup_root_adcs_{name}"] = results
 
 
-def _deploy_sub_cas(cloud_config, enterprise, enterprise_built, only, leader_details, ret):
+def _deploy_sub_cas(cloud_config, enterprise, enterprise_built, only, leader_details, ret, skip_join=False):
     """Deploy subordinate CAs and link them to root CAs. Depends on root_ca for the domain."""
     sub_cas = list(filter(lambda x: 'ad-subordinate-certificate-server' in x['roles'], enterprise['nodes']))
     for node in sub_cas:
@@ -345,7 +346,7 @@ def _deploy_sub_cas(cloud_config, enterprise, enterprise_built, only, leader_det
         print(f"Setting up subordinate certification server {name} in domain {domain}")
         control_ipv4_addr, game_ipv4_addr, password = extract_creds(enterprise_built, name)
         if only is None or name in only or leader_details[domain]["root_ca_name"] in only:
-            results = role_domains.setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_details[domain], cloud_config, enterprise, enterprise_built)
+            results = role_domains.setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_details[domain], cloud_config, enterprise, enterprise_built, skip_join=skip_join)
             sub_info = {
                 "node": node,
                 "control_ip": control_ipv4_addr,
@@ -371,7 +372,7 @@ def _deploy_sub_cas(cloud_config, enterprise, enterprise_built, only, leader_det
         ret[f"setup_subordinate_adcs_{name}"] = results
 
 
-def _deploy_iis(cloud_config, enterprise, enterprise_built, only, leader_details, ret):
+def _deploy_iis(cloud_config, enterprise, enterprise_built, only, leader_details, ret, skip_join=False):
     """Deploy IIS servers. Joins the domain and requests a cert from the SubCA, so depends on SubCA."""
     iis_servers = list(filter(lambda x: 'iis' in x['roles'], enterprise['nodes']))
     for node in iis_servers:
@@ -381,10 +382,54 @@ def _deploy_iis(cloud_config, enterprise, enterprise_built, only, leader_details
         control_ipv4_addr, game_ipv4_addr, password = extract_creds(enterprise_built, name)
         subca_node = leader_details[domain]["subordinate_certification_server"]["node"]
         if only is None or name in only:
-            results = role_iis.setup_iis(node, control_ipv4_addr, game_ipv4_addr, password, subca_node, leader_details[domain], cloud_config, enterprise, enterprise_built)
+            results = role_iis.setup_iis(node, control_ipv4_addr, game_ipv4_addr, password, subca_node, leader_details[domain], cloud_config, enterprise, enterprise_built, skip_join=skip_join)
         else:
             results = {"msg": "skipping setup of IIS server as requested."}
         ret[f"setup_iis_{name}"] = results
+
+
+def _parallel_join_ca_iis(cloud_config, enterprise, enterprise_built, only, leader_details, ret):
+    """
+    Phase 2.B.1: pre-join rootca / subca / iis to the domain in parallel.
+
+    Each of these nodes only needs dc1 (the forest leader) to be up before it
+    can join. After parallel joins complete, the caller runs the dependent
+    install steps sequentially with skip_join=True.
+
+    Save: each join_domain_windows is ~5-7 min wall-clock (mostly Add-Computer
+    retry loop + reboot wait). Running three in parallel cuts the chain's
+    join cost from ~18 min to ~6 min.
+    """
+    target_roles = ['ad-root-certificate-server', 'ad-subordinate-certificate-server', 'iis']
+    nodes_to_join = []
+    for node in enterprise['nodes']:
+        if any(r in node['roles'] for r in target_roles):
+            nodes_to_join.append(node)
+    nodes_to_join = [n for n in nodes_to_join if only is None or n['name'] in only]
+
+    if not nodes_to_join:
+        return
+
+    def _join_one(node):
+        name = node['name']
+        domain = node['domain']
+        enterprise_name = cloud_config['enterprise_url']
+        fqdn_domain_name = domain + '.' + enterprise_name
+        leader_admin_password = leader_details[domain]['admin_pass']
+        game_leader_addrs = leader_details[domain]['game_addr']
+        control_ipv4_addr, game_ipv4_addr, password = extract_creds(enterprise_built, name)
+        domain_ips = str(game_leader_addrs).replace("[", "").replace("]", "").replace("'", "\"")
+        print(f"  [phase-2-join] Joining {name} to domain {domain} (parallel)")
+        return name, role_domains.join_domain_windows(
+            name, leader_admin_password, control_ipv4_addr, game_ipv4_addr,
+            domain_ips, fqdn_domain_name, domain, password,
+        )
+
+    results = Parallel(n_jobs=len(nodes_to_join), backend="threading")(
+        delayed(_join_one)(node) for node in nodes_to_join
+    )
+    for name, result in results:
+        ret[f"phase2_join_{name}"] = result
 
 
 def deploy_domain_controllers(cloud_config, enterprise, enterprise_built, only):
@@ -424,9 +469,13 @@ def deploy_domain_controllers(cloud_config, enterprise, enterprise_built, only):
         _deploy_followers(cloud_config, enterprise, enterprise_built, only, leader_details, ret)
 
     def branch_ca_iis():
-        _deploy_root_cas(cloud_config, enterprise, enterprise_built, only, leader_details, ret)
-        _deploy_sub_cas(cloud_config, enterprise, enterprise_built, only, leader_details, ret)
-        _deploy_iis(cloud_config, enterprise, enterprise_built, only, leader_details, ret)
+        # 2.B.1: parallel domain-join for rootca/subca/iis (only depends on dc1).
+        _parallel_join_ca_iis(cloud_config, enterprise, enterprise_built, only, leader_details, ret)
+        # 2.B.2: install services in dependency order (rootca -> subca+link -> iis),
+        # skipping the now-already-done join_domain_windows step inside each.
+        _deploy_root_cas(cloud_config, enterprise, enterprise_built, only, leader_details, ret, skip_join=True)
+        _deploy_sub_cas(cloud_config, enterprise, enterprise_built, only, leader_details, ret, skip_join=True)
+        _deploy_iis(cloud_config, enterprise, enterprise_built, only, leader_details, ret, skip_join=True)
 
     if use_parallel:
         Parallel(n_jobs=2, backend="threading")([

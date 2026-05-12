@@ -13,7 +13,8 @@ def setup_iis(
         leader_details,
         cloud_config,
         enterprise,
-        enterprise_built
+        enterprise_built,
+        skip_join=False,
 ):
 
     name = iis_node["name"]
@@ -33,16 +34,20 @@ def setup_iis(
     if not iswindows:
         raise RuntimeError("Cannot install IIS on non-Windows systems")
 
-    join_domain_results = role_domains.join_domain_windows(
-        name,
-        leader_admin_password,
-        control_ipv4_addr,
-        game_ipv4_addr,
-        str(game_leader_addrs).replace("[", "").replace("]", "").replace("'", "\""),
-        fqdn_domain_name,
-        domain,
-        password
-    )
+    if skip_join:
+        print(f"  [skip_join] Skipping domain join for {name} (pre-joined by caller).")
+        join_domain_results = {"skipped": True}
+    else:
+        join_domain_results = role_domains.join_domain_windows(
+            name,
+            leader_admin_password,
+            control_ipv4_addr,
+            game_ipv4_addr,
+            str(game_leader_addrs).replace("[", "").replace("]", "").replace("'", "\""),
+            fqdn_domain_name,
+            domain,
+            password
+        )
     print(f"  Installing IIS for node {name}")
 
     # NOTE: Added Invoke-ProcWithTimeoutAndRetry and switched all certreq calls to use it.

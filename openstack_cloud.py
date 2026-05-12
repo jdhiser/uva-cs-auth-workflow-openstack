@@ -11,6 +11,7 @@ import glanceclient
 import openstack
 from openstack import exceptions as os_exc
 import re
+from joblib import Parallel, delayed
 
 
 class OpenstackCloud:
@@ -132,7 +133,7 @@ class OpenstackCloud:
 
         return self.cloud_config['instance_size_map'].get(size_name, size_name)
 
-    def find_image_by_name(self, name):
+    def find_image_by_name(self, name, for_node=None):
         images = self.glclient.images.list()
         found_image = None
         for image in images:
@@ -144,7 +145,8 @@ class OpenstackCloud:
         if found_image is None:
             str_value = "Image not found: " + name
             raise NameError(str_value)
-        print("  Found image id: " + found_image['id'])
+        prefix = f"[{for_node}] " if for_node else ""
+        print(f"  {prefix}Found image '{name}' id: {found_image['id']}")
         return found_image
 
     def get_network_id(self, name_or_id):
@@ -212,7 +214,7 @@ class OpenstackCloud:
             else:
                 return None
 
-    def find_network_by_name(self, name):
+    def find_network_by_name(self, name, for_node=None):
         ret = self.neutronClient.list_networks()
         networks = ret['networks']
         found_network = None
@@ -226,10 +228,20 @@ class OpenstackCloud:
         if found_network is None:
             str_value = f"Network not found: {name}"
             raise NameError(str_value)
-        print("  Found network id: " + found_network['id'])
+        prefix = f"[{for_node}] " if for_node else ""
+        print(f"  {prefix}Found network '{name}' id: {found_network['id']}")
         return found_network
 
-    def create_nodes(self, enterprise, ret):
+    def create_nodes(self, enterprise, ret, parallel=10):
+        """
+        Create all enterprise nodes via Nova. With `parallel > 1`, runs up to
+        `parallel` create_server calls concurrently via joblib (threading
+        backend), since each call is dominated by API-call latency + the
+        defensive 30-second sleep after submission.
+
+        Hoists the security-group validation out of the per-node loop (it's
+        constant across nodes) so we don't re-list groups per node.
+        """
 
         ret['nodes'] = []
 
@@ -237,28 +249,30 @@ class OpenstackCloud:
             errstr = "  Found that one or more nodes already exist, aborting deploy."
             raise RuntimeError(errstr)
 
-        for node in enterprise['nodes']:
+        # Validate security group once — same for every node.
+        security_group = self.cloud_config['security_group']
+        all_groups = self.conn.list_security_groups()
+        project_groups = [x for x in all_groups if x.name == security_group or x.id == security_group]
+        if not len(project_groups) == 1:
+            errstr = "Found 0 or more than 1 security groups called " + security_group + "\n" + str(project_groups)
+            raise RuntimeError(errstr)
+
+        keypair = self.cloud_config['keypair']
+
+        def _create_one(node):
             name = node['name']
             print("Creating node named " + name)
             os_name = node['os']
             size = node.get('size', "small")
             domain = node.get('domain', "")
-            keypair = self.cloud_config['keypair']
 
             image = self.os_to_image(os_name)
             flavor = self.size_to_flavor(size)
-            security_group = self.cloud_config['security_group']
-            all_groups = self.conn.list_security_groups()
-            project_groups = [x for x in all_groups if x.name == security_group or x.id == security_group]
-            if not len(project_groups) == 1:
-                errstr = "Found 0 or more than 1 security groups called " + security_group + "\n" + str(project_groups)
-                raise RuntimeError(errstr)
 
             network = node.get('network', self.cloud_config['external_network'])
 
-            nova_image = self.find_image_by_name(image)
-            # nova_flavor = self.nova_sess.flavors.find(name=flavor)
-            nova_net = self.find_network_by_name(network)
+            nova_image = self.find_image_by_name(image, for_node=name)
+            nova_net = self.find_network_by_name(network, for_node=name)
             self.network_name = nova_net['name']
             nova_nics = [{'net-id': nova_net['id']}]
             nova_instance = self.conn.create_server(
@@ -270,10 +284,9 @@ class OpenstackCloud:
                 nics=nova_nics
             )
             time.sleep(30)
-            print("  Server " + name + " has id " + nova_instance.id)
+            print("  [" + name + "] Server has id " + nova_instance.id)
             nova_instance = self.nova_sess.servers.get(nova_instance.id)
-            # print(dir(nova_instance))
-            new_node = {
+            return {
                 'name': name,
                 'flavor': flavor,
                 'size': size,
@@ -290,7 +303,17 @@ class OpenstackCloud:
                 'id': nova_instance.id,
                 'enterprise_description': node
             }
-            ret['nodes'].append(new_node)
+
+        nodes = enterprise['nodes']
+        if parallel and parallel > 1 and len(nodes) > 1:
+            print(f"Creating {len(nodes)} nodes with up to {parallel} in parallel...")
+            results = Parallel(n_jobs=min(parallel, len(nodes)), backend="threading")(
+                delayed(_create_one)(node) for node in nodes
+            )
+        else:
+            results = [_create_one(node) for node in nodes]
+
+        ret['nodes'] = list(results)
         return ret
 
     def query_nodes(self, enterprise, ret):
@@ -324,7 +347,7 @@ class OpenstackCloud:
 
             network_name = node.get('network', self.cloud_config['external_network'])
 
-            nova_image = self.find_image_by_name(image)
+            nova_image = self.find_image_by_name(image, for_node=name)
             # nova_flavor = self.nova_sess.flavors.find(name=flavor)
 
             network_id = self.get_network_id(network_name)
@@ -333,7 +356,7 @@ class OpenstackCloud:
 
             nova_nics = [{'net-id': network_id}]
             nova_instance = self.servers[name]
-            print("  Server " + name + " has id " + nova_instance['id'])
+            print("  [" + name + "] Server has id " + nova_instance['id'])
             # print(dir(nova_instance))
             new_node = {
                 'name': name,
@@ -463,7 +486,7 @@ class OpenstackCloud:
                 print(f"WARNING:  already a DNS record for {to_deploy_name}")
         return ret
 
-    def deploy_enterprise(self, enterprise):
+    def deploy_enterprise(self, enterprise, parallel=10):
         for i in range(100):
             try:
                 ret = {'check_deploy_ok': self.check_deploy_ok(enterprise)}
@@ -475,7 +498,7 @@ class OpenstackCloud:
             errstr = "Found that deploying the network will conflict with existing setup."
             raise RuntimeError(errstr)
         ret = self.create_zones(ret)
-        ret = self.create_nodes(enterprise, ret)
+        ret = self.create_nodes(enterprise, ret, parallel=parallel)
         ret = self.wait_for_ready(ret)
         ret = self.collect_info(enterprise, ret)
         ret = self.create_dns_names(ret)

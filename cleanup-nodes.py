@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 
+import log_setup  # noqa: F401  -- patches print() to prefix wall-clock timestamps
 import sys
 import json
 from datetime import datetime

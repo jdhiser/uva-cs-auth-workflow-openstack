@@ -876,7 +876,7 @@ def deploy_users(users, built):
     return deploy_users
 
 
-def setup_root_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_details, cloud_config, enterprise, enterprise_built):
+def setup_root_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_details, cloud_config, enterprise, enterprise_built, skip_join=False):
     """
     setup_root_ca
 
@@ -891,6 +891,9 @@ def setup_root_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_deta
     - cloud_config: dict - Contains cloud-wide config options including 'enterprise_url'
     - enterprise: unused, retained for signature compatibility
     - enterprise_built: unused, retained for signature compatibility
+    - skip_join: bool - if True, assume the node is already domain-joined and
+      skip the (slow) join_domain_windows step. Used when the caller has
+      already pre-joined this node in parallel with peers.
 
     Returns:
     - dict: stdout, stderr, and exit_status from the shell command
@@ -909,16 +912,20 @@ def setup_root_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_deta
     if not iswindows:
         raise RuntimeError("Cannot install AD CS on non-Windows systems")
 
-    join_domain_results = join_domain_windows(
-        name,
-        leader_admin_password,
-        control_ipv4_addr,
-        game_ipv4_addr,
-        str(game_leader_addrs).replace("[", "").replace("]", "").replace("'", "\""),
-        fqdn_domain_name,
-        domain_name,
-        password
-    )
+    if skip_join:
+        print(f"  [skip_join] Skipping domain join for {name} (pre-joined by caller).")
+        join_domain_results = {"skipped": True}
+    else:
+        join_domain_results = join_domain_windows(
+            name,
+            leader_admin_password,
+            control_ipv4_addr,
+            game_ipv4_addr,
+            str(game_leader_addrs).replace("[", "").replace("]", "").replace("'", "\""),
+            fqdn_domain_name,
+            domain_name,
+            password
+        )
     print(f"  Installing Root AD CS for node {name}")
 
     # Construct the PowerShell command as a multiline string
@@ -1068,7 +1075,7 @@ def setup_root_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_deta
     }
 
 
-def setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_details, cloud_config, enterprise, enterprise_built):
+def setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_details, cloud_config, enterprise, enterprise_built, skip_join=False):
     """
     setup_subordinate_ca
 
@@ -1083,6 +1090,9 @@ def setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, lead
     - cloud_config: dict - Contains cloud-wide config options including 'enterprise_url'
     - enterprise: unused, retained for signature compatibility
     - enterprise_built: unused, retained for signature compatibility
+    - skip_join: bool - if True, assume the node is already domain-joined and
+      skip the (slow) join_domain_windows step. Used when the caller has
+      already pre-joined this node in parallel with peers.
 
     Returns:
     - dict: stdout, stderr, and exit_status from the shell command
@@ -1101,16 +1111,20 @@ def setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, lead
     if not iswindows:
         raise RuntimeError("Cannot install AD CS on non-Windows systems")
 
-    join_domain_results = join_domain_windows(
-        name,
-        leader_admin_password,
-        control_ipv4_addr,
-        game_ipv4_addr,
-        str(game_leader_addrs).replace("[", "").replace("]", "").replace("'", "\""),
-        fqdn_domain_name,
-        domain_name,
-        password
-    )
+    if skip_join:
+        print(f"  [skip_join] Skipping domain join for {name} (pre-joined by caller).")
+        join_domain_results = {"skipped": True}
+    else:
+        join_domain_results = join_domain_windows(
+            name,
+            leader_admin_password,
+            control_ipv4_addr,
+            game_ipv4_addr,
+            str(game_leader_addrs).replace("[", "").replace("]", "").replace("'", "\""),
+            fqdn_domain_name,
+            domain_name,
+            password
+        )
 
     print(f"  Installing Subordinate AD CS for node {name}")
     cmd = gpupdate_str + f"""

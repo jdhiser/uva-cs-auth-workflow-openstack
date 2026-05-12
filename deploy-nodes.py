@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import log_setup  # noqa: F401  -- patches print() to prefix wall-clock timestamps
 import argparse
 import traceback
 import sys
@@ -28,7 +29,7 @@ def load_configs(cloud_config_filename, enterprise_filename):
     return cloud_config, enterprise
 
 
-def deploy_enterprise(cloud_config, enterprise):
+def deploy_enterprise(cloud_config, enterprise, parallel=10):
     ret = {"deploy_start": str(datetime.now())}
     match cloud_config['cloud_type'].lower():
         case 'openstack':
@@ -37,7 +38,7 @@ def deploy_enterprise(cloud_config, enterprise):
         case _:
             raise Exception(f"Cannot find cloud type: {cloud_config['cloud_type']}")
 
-    ret['deployed'] = cloud.deploy_enterprise(enterprise)
+    ret['deployed'] = cloud.deploy_enterprise(enterprise, parallel=parallel)
 
     ret["deploy_end"] = str(datetime.now())
     return ret
@@ -80,6 +81,11 @@ def main():
         help="Query the cloud for details about already deployed nodes, instead of deploying them yourself."
     )
 
+    parser.add_argument(
+        "-p", "--parallel", type=int, default=10,
+        help="Maximum number of nodes to create concurrently (default: 10). Use 1 for sequential."
+    )
+
     args = parser.parse_args()
 
     json_output = {}
@@ -87,9 +93,9 @@ def main():
         json_output["deploy_start_time"] = str(datetime.now())
         cloud_config, enterprise_config = load_configs(args.cloud_config_file, args.enterprise_config_file)
 
-        print("Deploying nodes.")
+        print(f"Deploying nodes (parallel={args.parallel}).")
         enterprise_built = query_enterprise(cloud_config, enterprise_config) if args.query_only \
-            else deploy_enterprise(cloud_config, enterprise_config)
+            else deploy_enterprise(cloud_config, enterprise_config, parallel=args.parallel)
 
         print("Deploying nodes, completed.")
 
