@@ -484,7 +484,49 @@ class OpenstackCloud:
                 node['dns_setup'] = self.designateClient.recordsets.create(zone, to_deploy_name, 'A', [address])
             except designate_client.exceptions.Conflict as _:  # noqa: F841
                 print(f"WARNING:  already a DNS record for {to_deploy_name}")
+
+        self._wait_for_dns_active(zone, ret['nodes'], timeout_sec=180, poll_sec=5)
         return ret
+
+    def _wait_for_dns_active(self, zone_id, nodes, timeout_sec=180, poll_sec=5):
+        """
+        Poll Designate until every node's A record reaches status=ACTIVE.
+
+        Designate's worker has been observed to leave recordsets in
+        PENDING/CREATE if the pool-manager can't push to the upstream
+        nameserver. The deploy then "succeeds" but clients downstream get
+        NXDOMAIN or stale IPs hours later. Surface that breakage here so it
+        fails the deploy instead of haunting the emulate-logins phase.
+        """
+        expected_names = {f"{n['name']}.{self.enterprise_url}." for n in nodes}
+        deadline = time.time() + timeout_sec
+        attempt = 0
+        while True:
+            attempt += 1
+            recordsets = list(self.designateClient.recordsets.list(zone_id))
+            by_name = {r['name']: r for r in recordsets if r.get('type') == 'A'}
+            pending = [
+                name for name in expected_names
+                if by_name.get(name, {}).get('status') != 'ACTIVE'
+            ]
+            if not pending:
+                print(f"All {len(expected_names)} DNS A records are ACTIVE (attempt {attempt}).")
+                return
+            if time.time() >= deadline:
+                details = []
+                for name in sorted(pending):
+                    r = by_name.get(name, {})
+                    details.append(f"  {name}  status={r.get('status', 'MISSING')}  action={r.get('action', '-')}  records={r.get('records', [])}")
+                raise RuntimeError(
+                    f"Designate did not publish {len(pending)}/{len(expected_names)} A "
+                    f"records in zone {self.enterprise_url} within {timeout_sec}s. "
+                    f"This usually means the designate-worker is broken and clients "
+                    f"won't be able to resolve enterprise hostnames.\n"
+                    + "\n".join(details)
+                )
+            if attempt == 1 or attempt % 6 == 0:
+                print(f"Waiting for {len(pending)}/{len(expected_names)} DNS recordsets to become ACTIVE...")
+            time.sleep(poll_sec)
 
     def deploy_enterprise(self, enterprise, parallel=10):
         for i in range(100):
