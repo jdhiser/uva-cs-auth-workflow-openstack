@@ -76,10 +76,17 @@ run_workflow()
 		exit 1
 	fi
 
-	# Check for top-level success in the log
-	if ! grep -v '"step_name"' "${wf}.out" | grep -q '"status": "success"'
+	# Check for top-level workflow-body success in the log. The SSH-connect
+	# success line also matches "status": "success" without a "step_name",
+	# so we must additionally exclude workflow_name="ssh" — otherwise we
+	# would pass as long as any SSH login succeeded, regardless of whether
+	# the workflow body ever finished.
+	if ! grep '"status": "success"' "${wf}.out" \
+		| grep -v '"step_name"' \
+		| grep -v '"workflow_name": "ssh"' \
+		| grep -q .
 	then
-		echo "ERROR: No workflow-level success found for workflow: $wf"
+		echo "ERROR: No workflow-body-level success found for workflow: $wf"
 		exit 1
 	fi
 }

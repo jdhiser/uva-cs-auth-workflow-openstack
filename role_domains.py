@@ -794,6 +794,19 @@ done
 
 sudo systemctl restart sshd sssd realmd chronyd
 
+# Domain users emulating "build_software" run "sudo apt-get install" without
+# any way to answer a password prompt — the HumanTyperShell just times out
+# waiting for the bash prompt. Grant NOPASSWD sudo to AD "domain users" so
+# those steps complete non-interactively. sssd is configured with
+# use_fully_qualified_names=False, so groups render with a literal space
+# and no realm suffix, which visudo requires we escape.
+sudo tee /etc/sudoers.d/90-domain-users-nopasswd > /dev/null << 'SUDOERS_EOF'
+%domain\ users ALL=(ALL) NOPASSWD:ALL
+%domain\ admins ALL=(ALL) NOPASSWD:ALL
+SUDOERS_EOF
+sudo chmod 0440 /etc/sudoers.d/90-domain-users-nopasswd
+sudo visudo -c -f /etc/sudoers.d/90-domain-users-nopasswd
+
 attempts=0
 while (( attempts < 50 ))
 do
