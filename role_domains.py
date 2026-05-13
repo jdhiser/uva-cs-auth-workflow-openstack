@@ -219,7 +219,7 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
     print(f'  [{name}] domain-controller password: {leader_admin_password}')
 
     adcmd = """
-        function ts { param([string]$msg) Write-Host "[$(Get-Date -Format 'HH:mm:ss')] $msg" }
+        function ts {{ param([string]$msg) Write-Host "[$(Get-Date -Format 'HH:mm:ss')] $msg" }}
         ts "BEGIN add_domain_controller"
 
         ts "Step: install embedded Python (BEGIN)"
