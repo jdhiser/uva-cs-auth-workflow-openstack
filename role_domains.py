@@ -1299,6 +1299,37 @@ def setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, lead
     # Confirm we can find a DC
     nltest /dsgetdc:{domain_name}
 
+    # Force AD replication and wait for this computer's account to be
+    # visible on every DC. Install-AdcsCertificationAuthority internally
+    # uses the local machine account to authenticate to AD; if the
+    # computer object hasn't replicated from the join-source DC to the
+    # peer DCs, ADCS hits ERROR_LOGON_FAILURE (1326) and the install
+    # fails with ENUM_ENTERPRISE_UNAVAIL_REASON_DS_UNAVAILABLE, which
+    # surfaces as the misleading
+    # "A value for the attribute was not in the acceptable range of
+    # values. 0x80072082 (WIN32: 8322 ERROR_DS_RANGE_CONSTRAINT)".
+    Write-Host "Forcing AD replication before SubCA install (computer account propagation)..."
+    & repadmin /syncall /AdeP | Out-Host
+    $thisHost = [System.Net.Dns]::GetHostName()
+    $dcs = (Get-ADDomainController -Filter *).HostName
+    $deadline = (Get-Date).AddSeconds(180)
+    while ((Get-Date) -lt $deadline) {{
+        $missing = $false
+        foreach ($dc in $dcs) {{
+            try {{
+                $obj = Get-ADComputer $thisHost -Server $dc -ErrorAction Stop
+            }} catch {{
+                Write-Host ("[SubCA-prereq] computer {{0}} not yet on DC {{1}} ({{2}})" -f $thisHost, $dc, $_.Exception.Message)
+                $missing = $true
+            }}
+        }}
+        if (-not $missing) {{
+            Write-Host "[SubCA-prereq] computer account visible on all $($dcs.Count) DCs."
+            break
+        }}
+        Start-Sleep -Seconds 5
+    }}
+
     function Get-SubCAState {{
         param(
             [Parameter(Mandatory=$true)][string] $CACommonName
