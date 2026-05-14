@@ -1322,7 +1322,7 @@ def setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, lead
 
         # Install-AdcsCertificationAuthority writes a single-shot CSR file at
         # `C:\<computer-fqdn>_<CACommonName>.req` as its last step. If we
-        # don't see that file, the install didn't complete — the CSR is what
+        # don't see that file, the install didn't complete -- the CSR is what
         # link_subordinate_to_root will SFTP later, and a missing one fails
         # the deploy noisily one stage downstream. Treat its presence as the
         # authoritative "install finished" signal, not just registry/service
@@ -1357,7 +1357,7 @@ def setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, lead
         Write-Host "Subordinate CA '$caName' already fully configured (CSR present). Skipping Install-AdcsCertificationAuthority."
         $success = $true
     }} elseif ($state.CAInfoOk -and $state.ConfigExists -and -not $state.ReqExists) {{
-        Write-Host "Subordinate CA '$caName' looks configured but its CSR file is missing — partial install detected, will Uninstall + Install."
+        Write-Host "Subordinate CA '$caName' looks configured but its CSR file is missing -- partial install detected, will Uninstall + Install."
         try {{
             Uninstall-AdcsCertificationAuthority -Force | Out-Host
         }} catch {{
@@ -1471,7 +1471,7 @@ def setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, lead
         raise RuntimeError("Could not verify Subordinate AD CS installation completed.")
 
     # The ADCS feature being "Installed" only means the Windows feature
-    # is present — it does NOT confirm that Install-AdcsCertificationAuthority
+    # is present -- it does NOT confirm that Install-AdcsCertificationAuthority
     # ran to completion and wrote its CSR file. Verify the .req exists
     # before declaring success; otherwise link_subordinate_to_root will
     # fail mid-deploy with an opaque SFTP FileNotFoundError.
