@@ -1422,6 +1422,20 @@ def setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, lead
                 }}
 
                 if ($i -lt $maxRetries) {{
+                    # Run Uninstall-AdcsCertificationAuthority before retrying:
+                    # Install-AdcsCertificationAuthority writes partial AD pKI
+                    # objects even when it later throws, and a tight retry loop
+                    # then trips ERROR_DS_RANGE_CONSTRAINT (8322) because the
+                    # next attempt sees stale CN=Enrollment Services /
+                    # CN=CDP entries the previous failed attempt wrote.
+                    # Uninstall clears that residue. The cmdlet may itself
+                    # fail if nothing was registered -- swallow that and move on.
+                    Write-Host "Running Uninstall-AdcsCertificationAuthority -Force to clear partial AD state before retry..."
+                    try {{
+                        Uninstall-AdcsCertificationAuthority -Force | Out-Host
+                    }} catch {{
+                        Write-Host "Uninstall returned (likely no-op): $($_.Exception.Message)"
+                    }}
                     Write-Host "Sleeping $retryDelay seconds before retry..."
                     Start-Sleep -Seconds $retryDelay
                 }} else {{
