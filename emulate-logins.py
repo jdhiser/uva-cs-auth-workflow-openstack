@@ -114,7 +114,12 @@ def log_ssh(status: str, message: str, host_ip: str, ssh_output: List[str], step
 
     if step_name is not None:
         log_entry["step_name"] = step_name
-    print(json.dumps(log_entry))
+    # flush=True so these JSON events survive a SIGTERM from the outer
+    # `timeout` — Python fully-buffers stdout when piped, and without
+    # flushing we lose all the ssh-start/connect events emitted before
+    # the kill, making "the workflow never logged anything" impossible
+    # to distinguish from "we never got to the workflow."
+    print(json.dumps(log_entry), flush=True)
 
 
 def get_target_node(built, node_name):
@@ -301,6 +306,7 @@ def emulate_login(
     status1 = None
     status2 = None
     cmd1 = 'echo ' + json.dumps(login) + " > action.json"
+    ssh_ok = False
     try:
         if use_fake_fromip:
             del_command = apply_fake_fromip(dev, mac, from_ip_str)
@@ -316,6 +322,7 @@ def emulate_login(
         else:
             stdout2, stderr2, status2 = run_linux_login(shell, username, password, login['login_length'], seed, workflows)
 
+        ssh_ok = True
         logger.info("ssh successful for windows" if is_windows else "ssh successful for linux")
 
     except KeyboardInterrupt:
@@ -337,8 +344,14 @@ def emulate_login(
         "exit_status": [status1, status2]
     }
 
-    log_ssh("success", msg, targ_ip, stdout1 + stderr1 + stdout2 + stderr2, "connect")
-    log_ssh("success", msg, targ_ip, stdout1 + stderr1 + stdout2 + stderr2)
+    # Only log "success" if the try block completed without an exception.
+    # Previously these two lines were unconditional, so any auth/connect
+    # failure emitted BOTH an "error" and a "success" for the same attempt
+    # — silently masking real failures in any CI check that grepped for
+    # "status": "success".
+    if ssh_ok:
+        log_ssh("success", msg, targ_ip, stdout1 + stderr1 + stdout2 + stderr2, "connect")
+        log_ssh("success", msg, targ_ip, stdout1 + stderr1 + stdout2 + stderr2)
     login_results.append(new_output)
 
     shell = None

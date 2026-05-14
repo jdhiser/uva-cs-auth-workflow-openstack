@@ -904,6 +904,13 @@ def deploy_users(users, built):
     deploy_users['cmds'] = domain_commands
     deploy_users['add_users'] = {}
 
+    # Collect the set of usernames created per domain so we can verify
+    # replication below.
+    domain_user_names = {}
+    for user in users:
+        domain_user_names.setdefault(user['domain'], []).append(user['user_profile']['username'])
+
+    deploy_users['verify'] = {}
     for domain in domain_commands:
         cmd = domain_commands[domain]
         controller_name = domain_leaders[domain]['name']
@@ -917,7 +924,82 @@ def deploy_users(users, built):
         stdout, stderr, exit_status = shell.execute_powershell(cmd, verbose=verbose)
         deploy_users['add_users'][domain] = {"cmd": cmd, "stdout": stdout, "stderr": stderr, "exit_status": exit_status}
 
+        # `New-ADUser -accountpassword $x -enabled $true` is multiple internal
+        # LDAP ops (create-disabled, set-password, enable). Each replicates
+        # to peer DCs separately, so a peer DC can briefly serve the user
+        # with userAccountControl=514 (DISABLED) — long enough that a Linux
+        # client's SSSD will fail the AD access check on first auth and
+        # cache the denial for ad_gpo_cache_timeout. Force replication and
+        # then poll every DC until each created user shows
+        # userAccountControl=512 (NORMAL_ACCOUNT, enabled).
+        verify_cmd = _build_repadmin_and_verify_ps(domain_user_names.get(domain, []))
+        v_out, v_err, v_status = shell.execute_powershell(verify_cmd, verbose=verbose)
+        deploy_users['verify'][domain] = {
+            "cmd": verify_cmd,
+            "stdout": v_out,
+            "stderr": v_err,
+            "exit_status": v_status,
+        }
+        if v_status != 0:
+            raise RuntimeError(
+                f"deploy_users: replication verification failed for domain {domain} "
+                f"(exit={v_status}). stderr tail: {str(v_err)[-500:]}"
+            )
+
     return deploy_users
+
+
+def _build_repadmin_and_verify_ps(usernames):
+    """
+    Build a PowerShell snippet that:
+      1. forces all-DC replication from this DC outward (`repadmin /syncall /AdeP`)
+      2. polls every DC in the domain for each created user, waiting for
+         userAccountControl=512 (NORMAL_ACCOUNT, enabled) — non-512 = still
+         replicating or disabled.
+    Exits non-zero on timeout so the caller can surface the failure.
+    """
+    # PowerShell-quote each username for embedding in the @() array
+    quoted = ", ".join(f"'{u}'" for u in usernames)
+    return f"""
+$ErrorActionPreference = "Stop"
+$users = @({quoted})
+
+Write-Host "[deploy_users] Forcing replication via repadmin /syncall /AdeP ..."
+& repadmin /syncall /AdeP | Out-Host
+# repadmin exit code can be nonzero even on benign partial-sync warnings;
+# rely on the per-user poll below for the real go/no-go signal.
+
+$dcs = (Get-ADDomainController -Filter *).HostName
+Write-Host "[deploy_users] DCs to verify against: $($dcs -join ', ')"
+
+$deadline = (Get-Date).AddSeconds(180)
+$missing = $true
+while ($missing -and (Get-Date) -lt $deadline) {{
+    $missing = $false
+    foreach ($u in $users) {{
+        foreach ($dc in $dcs) {{
+            try {{
+                $obj = Get-ADUser $u -Server $dc -Properties userAccountControl -ErrorAction Stop
+                if ($obj.userAccountControl -ne 512) {{
+                    Write-Host ("[deploy_users] not-yet-enabled on {{0}}: {{1}} uAC={{2}}" -f $dc, $u, $obj.userAccountControl)
+                    $missing = $true
+                }}
+            }} catch {{
+                Write-Host ("[deploy_users] not-yet-replicated to {{0}}: {{1}} ({{2}})" -f $dc, $u, $_.Exception.Message)
+                $missing = $true
+            }}
+        }}
+    }}
+    if ($missing) {{ Start-Sleep -Seconds 3 }}
+}}
+
+if ($missing) {{
+    Write-Host "[deploy_users] FAILED: not all users replicated as enabled within deadline."
+    exit 1
+}}
+Write-Host ("[deploy_users] All {{0}} users enabled on all {{1}} DCs." -f $users.Count, $dcs.Count)
+exit 0
+"""
 
 
 def setup_root_ca(node, control_ipv4_addr, game_ipv4_addr, password, leader_details, cloud_config, enterprise, enterprise_built, skip_join=False):

@@ -69,7 +69,11 @@ run_workflow()
 {
 	local wf="$1"
 	local time_limit="$2"
-	timeout $time_limit ./emulate-logins.py post-deploy-output.json logins.json --fast-debug --workflows "$wf" 2>&1 | tee "${wf}.out"
+	# python3 -u so the JSON ssh-start/connect lines emitted by
+	# log_ssh() flush before the timeout kills us — without -u, those
+	# prints sit in a piped-stdout buffer and disappear on SIGTERM,
+	# leaving us unable to tell whether the workflow ever started.
+	timeout $time_limit python3 -u ./emulate-logins.py post-deploy-output.json logins.json --fast-debug --workflows "$wf" 2>&1 | tee "${wf}.out"
 	if [[ ${PIPESTATUS[0]} -ne 124 ]]
 	then
 		echo "Emulate logins ($wf) exited before 100 seconds"
