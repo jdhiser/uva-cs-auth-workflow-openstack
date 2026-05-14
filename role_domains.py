@@ -1320,10 +1320,25 @@ def setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, lead
             # ignore, just report false
         }}
 
+        # Install-AdcsCertificationAuthority writes a single-shot CSR file at
+        # `C:\<computer-fqdn>_<CACommonName>.req` as its last step. If we
+        # don't see that file, the install didn't complete — the CSR is what
+        # link_subordinate_to_root will SFTP later, and a missing one fails
+        # the deploy noisily one stage downstream. Treat its presence as the
+        # authoritative "install finished" signal, not just registry/service
+        # state (which can be set by a partial install).
+        $reqExists   = $false
+        try {{
+            $reqExists = @(Get-ChildItem "C:\\*_${{CACommonName}}.req" -ErrorAction SilentlyContinue).Count -gt 0
+        }} catch {{
+            $reqExists = $false
+        }}
+
         [PSCustomObject]@{{
             FeatureInstalled = $hasFeature
             ConfigExists     = $hasConfig
             CAInfoOk         = $caInfoOk
+            ReqExists        = $reqExists
         }}
     }}
 
@@ -1332,11 +1347,22 @@ def setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, lead
     $success    = $false
     $caName     = "{domain_name}-SubCA"
 
-    # If the SubCA already appears installed and healthy, treat this as success
+    # If the SubCA already appears installed and healthy AND its CSR file
+    # is on disk, treat this as success. Without the CSR check, a partial
+    # install that wrote the registry config keys but never produced the
+    # .req file would short-circuit here, and link_subordinate_to_root
+    # would then fail with FileNotFoundError trying to SFTP the missing .req.
     $state = Get-SubCAState -CACommonName $caName
-    if ($state.CAInfoOk -and $state.ConfigExists) {{
-        Write-Host "Subordinate CA '$caName' already appears fully configured. Skipping Install-AdcsCertificationAuthority."
+    if ($state.CAInfoOk -and $state.ConfigExists -and $state.ReqExists) {{
+        Write-Host "Subordinate CA '$caName' already fully configured (CSR present). Skipping Install-AdcsCertificationAuthority."
         $success = $true
+    }} elseif ($state.CAInfoOk -and $state.ConfigExists -and -not $state.ReqExists) {{
+        Write-Host "Subordinate CA '$caName' looks configured but its CSR file is missing — partial install detected, will Uninstall + Install."
+        try {{
+            Uninstall-AdcsCertificationAuthority -Force | Out-Host
+        }} catch {{
+            Write-Warning "Uninstall-AdcsCertificationAuthority failed (continuing anyway): $($_.Exception.Message)"
+        }}
     }}
 
     if (-not $success) {{
@@ -1443,7 +1469,32 @@ def setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, lead
         print(f"adcs_stderr = {adcs_stderr}")
         print(f"verify_stdout = {verify_stdout}")
         raise RuntimeError("Could not verify Subordinate AD CS installation completed.")
-    print("  Verified SubordinateCA was setup properly")
+
+    # The ADCS feature being "Installed" only means the Windows feature
+    # is present — it does NOT confirm that Install-AdcsCertificationAuthority
+    # ran to completion and wrote its CSR file. Verify the .req exists
+    # before declaring success; otherwise link_subordinate_to_root will
+    # fail mid-deploy with an opaque SFTP FileNotFoundError.
+    req_check_cmd = (
+        f'$f = Get-ChildItem "C:\\*_{domain_name}-SubCA.req" -ErrorAction SilentlyContinue | Select-Object -First 1; '
+        f'if ($f) {{ Write-Host "SUBCA_REQ_OK:$($f.FullName):$($f.Length)" }} '
+        f'else {{ Write-Host "SUBCA_REQ_MISSING"; exit 2 }}'
+    )
+    shell = ShellHandler(control_ipv4_addr, domain_name + '\\' + 'administrator', leader_admin_password)
+    req_stdout, req_stderr, req_exit = shell.execute_powershell(req_check_cmd, verbose=verbose)
+    if req_exit != 0 or 'SUBCA_REQ_OK' not in str(req_stdout):
+        print(f"adcs_stdout = {adcs_stdout}")
+        print(f"adcs_stderr = {adcs_stderr}")
+        print(f"req_stdout = {req_stdout}")
+        print(f"req_stderr = {req_stderr}")
+        raise RuntimeError(
+            f"Subordinate CA install on {node['name']} did not produce a CSR file "
+            f"(no C:\\*_{domain_name}-SubCA.req). Install-AdcsCertificationAuthority "
+            f"may have been short-circuited by partial-install state. Manual fix: "
+            f"run `Uninstall-AdcsCertificationAuthority -Force` then "
+            f"`Install-AdcsCertificationAuthority -CAType EnterpriseSubordinateCA -CACommonName {domain_name}-SubCA -Force`."
+        )
+    print(f"  Verified SubordinateCA was setup properly: {str(req_stdout).strip()}")
 
     return {
         "install_adcs": {
