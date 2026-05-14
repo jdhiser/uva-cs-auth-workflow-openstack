@@ -1312,6 +1312,12 @@ def setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, lead
     & repadmin /syncall /AdeP | Out-Host
     $thisHost = [System.Net.Dns]::GetHostName()
     $dcs = (Get-ADDomainController -Filter *).HostName
+
+    # Phase 1: Wait for this computer's AD object to be readable on every DC.
+    # Get-ADComputer only confirms the object EXISTS; it doesn't test whether
+    # the machine account's Kerberos secret has replicated. That's required
+    # before Install-AdcsCertificationAuthority can authenticate to AD as
+    # the local machine.
     $deadline = (Get-Date).AddSeconds(180)
     while ((Get-Date) -lt $deadline) {{
         $missing = $false
@@ -1328,6 +1334,33 @@ def setup_subordinate_ca(node, control_ipv4_addr, game_ipv4_addr, password, lead
             break
         }}
         Start-Sleep -Seconds 5
+    }}
+
+    # Phase 2: Verify the secure channel to every DC actually works. This is
+    # the real prerequisite for ADCS install. nltest /sc_verify:<dc> attempts
+    # to set up a Netlogon secure channel to that specific DC; if the machine
+    # password hasn't replicated yet, it returns "I_NetLogonControl failed"
+    # or status NERR_DCNotFound. Test-ComputerSecureChannel works for the
+    # ambient DC but doesn't let us pick which one, so use nltest instead.
+    # ADCS internally talks to multiple DCs via DC Locator, so EVERY DC has
+    # to be reachable, not just the closest one.
+    $deadline = (Get-Date).AddSeconds(300)
+    while ((Get-Date) -lt $deadline) {{
+        $allOk = $true
+        foreach ($dc in $dcs) {{
+            $shortDc = $dc.Split('.')[0]
+            $out = (& nltest "/sc_verify:{domain_name}" "/server:$shortDc" 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0 -or $out -notmatch 'Trust Verification Status = 0 0x0 NERR_Success') {{
+                Write-Host ("[SubCA-prereq] secure channel to {{0}} not ready yet: {{1}}" -f $dc, ($out -replace '\s+', ' ' | Out-String).Trim().Substring(0, [Math]::Min(200, $out.Length)))
+                $allOk = $false
+                break
+            }}
+        }}
+        if ($allOk) {{
+            Write-Host "[SubCA-prereq] secure channel verified against all $($dcs.Count) DCs."
+            break
+        }}
+        Start-Sleep -Seconds 10
     }}
 
     function Get-SubCAState {{
