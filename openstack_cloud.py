@@ -462,51 +462,21 @@ class OpenstackCloud:
         ret['create_zones'] = \
             self.designateClient.zones.create(self.enterprise_url + ".", email="root@" + self.enterprise_url, ttl=60)
 
-        # bind/mdns race workaround #1: let bind finish AXFR'ing the freshly-
+        # bind/mdns race workaround: let bind finish AXFR'ing the freshly-
         # created SOA-only zone before any recordset add. Without this, the
         # first record-add can miss its NOTIFY and the records sit in
         # PENDING/CREATE indefinitely.
+        #
+        # We'd also like to shorten the SOA refresh interval (default ~58 min)
+        # to ~60s so bind re-polls mdns and self-heals when a NOTIFY is
+        # missed, but Designate marks the SOA as a "managed" recordset and
+        # rejects tenant updates with `BadRequest: Managed records may not be
+        # updated`. That fix lives at the pool-config level and requires
+        # cloud-admin credentials, which we don't have here.
         print("  Pausing 15s to let bind catch up with the new SOA-only zone...")
         time.sleep(15)
 
-        # bind/mdns race workaround #2: shrink the SOA refresh interval so
-        # that even if a NOTIFY is missed, bind re-polls mdns within ~60s
-        # instead of the default ~58 min. The SOA fields aren't directly
-        # settable on the zone object via the openstack tenant API, so
-        # rewrite the SOA recordset in place.
-        try:
-            self._shorten_soa_refresh(ret['create_zones']['id'])
-        except Exception as e:
-            print(f"  WARN: could not shorten SOA refresh on {self.enterprise_url}: {type(e).__name__}: {e}")
-
         return ret
-
-    def _shorten_soa_refresh(self, zone_id, refresh_sec=60):
-        """
-        Rewrite the zone's SOA recordset with a shortened refresh interval
-        so bind re-polls mdns roughly every `refresh_sec` instead of the
-        Designate default (typically ~58 min). SOA record format is:
-            <primary-ns> <admin-email> <serial> <refresh> <retry> <expire> <minimum>
-        Only the refresh field is touched.
-        """
-        records = list(self.designateClient.recordsets.list(zone_id))
-        soa_rs = next((r for r in records if r.get('type') == 'SOA'), None)
-        if soa_rs is None:
-            print("  WARN: no SOA recordset found in zone; skipping refresh adjustment")
-            return
-        if not soa_rs.get('records'):
-            print("  WARN: SOA recordset has no records; skipping refresh adjustment")
-            return
-        parts = soa_rs['records'][0].split()
-        if len(parts) < 7:
-            print(f"  WARN: SOA recordset format unexpected ({soa_rs['records'][0]!r}); skipping")
-            return
-        parts[3] = str(refresh_sec)
-        new_soa = " ".join(parts)
-        print(f"  Updating SOA refresh -> {refresh_sec}s on {soa_rs['name']}")
-        self.designateClient.recordsets.update(
-            zone_id, soa_rs['id'], {'records': [new_soa]}
-        )
 
     def query_zones(self, ret):
         print("Querying DNS zone " + self.enterprise_url)
