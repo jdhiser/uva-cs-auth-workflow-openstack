@@ -325,7 +325,13 @@ ET.SubElement(r, 'volume', {'{'}
     'server': '{fs_name}.{fqdn_domain_name}',
     'path': '%(DOMAIN_USER)',
     'mountpoint': '/home/{fqdn_domain_name}/%(DOMAIN_USER)',
-    'options': 'sec=krb5,cruid=%(USERUID),vers=3.1.1,uid=%(USERUID),gid=%(USERGID),noserverino'
+    # mfsymlinks: have the SMB client emulate POSIX symlinks via Minshall-French
+    # XSym files, instead of returning EOPNOTSUPP on symlink(2). Without it,
+    # any build that creates a symlink under the user's CIFS-mounted home
+    # (e.g. neovim's luajit deps install) fails with
+    # "ln: failed to create symbolic link: Operation not supported".
+    # Server side already supports it; this just opts the client in.
+    'options': 'sec=krb5,cruid=%(USERUID),vers=3.1.1,uid=%(USERUID),gid=%(USERGID),noserverino,mfsymlinks'
 {'}'})
 t.write(f)
 "
