@@ -1,8 +1,9 @@
 import os
-import subprocess
 import time
 import role_fs
 import paramiko
+import dns.resolver
+import dns.exception
 from shell_handler import ShellHandler
 
 
@@ -20,22 +21,28 @@ def _verify_dns_only_game_ip(name, fqdn, game_ip, control_ip, dc_dns_ip, timeout
     requires the one IP to be there. The "no control_ip" assertion is
     naturally satisfied.
 
-    Verifies from the bootstrap host using `dig` -- that's the same view a
-    domain client gets from AD DNS, no need to SSH back into the just-joined
-    node.
+    Verifies from the bootstrap host using dnspython directly against the
+    DC -- pure Python, no external binary, works the same in CI and on
+    the bootstrap. (Originally shelled out to `dig`, but the CI runner
+    image doesn't include dnsutils and we hit a FileNotFoundError storm.)
     """
+    resolver = dns.resolver.Resolver(configure=False)
+    resolver.nameservers = [dc_dns_ip]
+    resolver.lifetime = 3
+    resolver.timeout = 3
     deadline = time.time() + timeout_sec
     last_seen = None
     while time.time() < deadline:
         try:
-            r = subprocess.run(
-                ['dig', '+short', '+time=3', '+tries=1', f'@{dc_dns_ip}', fqdn, 'A'],
-                capture_output=True, text=True, timeout=10,
-            )
-            ips = [ln.strip() for ln in r.stdout.splitlines() if ln.strip() and not ln.startswith(';')]
-        except Exception as e:
+            answer = resolver.resolve(fqdn, 'A')
+            ips = sorted(str(a) for a in answer)
+        except dns.resolver.NXDOMAIN:
             ips = []
-            print(f"  [{name}] dns-verify dig error: {type(e).__name__}: {e}")
+        except dns.resolver.NoAnswer:
+            ips = []
+        except dns.exception.DNSException as e:
+            ips = []
+            print(f"  [{name}] dns-verify error querying {dc_dns_ip}: {type(e).__name__}: {e}")
         last_seen = ips
         if ips == [game_ip]:
             print(f"  [{name}] DNS verify OK: {fqdn} -> {game_ip}")

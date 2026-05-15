@@ -224,6 +224,11 @@ done
 
 ## Update sssd to use home dirs.
 
+# Preserve any dyndns_iface value set earlier in join_domain_linux. The
+# rewrite below would otherwise clobber it, putting SSSD back into the
+# default state of publishing all interfaces' IPs in AD DNS.
+OLD_DYNDNS_IFACE=$(grep -E '^[[:space:]]*dyndns_iface[[:space:]]*=' /etc/sssd/sssd.conf 2>/dev/null | head -1 | awk -F= '{{print $2}}' | xargs)
+
 sudo cp /etc/sssd/sssd.conf  sssd.conf.bak
 
 sudo tee /etc/sssd/sssd.conf << EOF
@@ -255,6 +260,11 @@ access_provider = ad
 krb5_auth_timeout = 60
 EOF
 
+# Restore the dyndns_iface line we saved before the rewrite, so SSSD
+# keeps registering only the game interface in AD DNS.
+if [ -n "$OLD_DYNDNS_IFACE" ]; then
+    sudo sed -i "/^dyndns_update = True/a dyndns_iface = $OLD_DYNDNS_IFACE" /etc/sssd/sssd.conf
+fi
 
 
 sudo tee  /etc/pam.d/common-session << EOF
