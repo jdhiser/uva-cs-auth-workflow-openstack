@@ -1,0 +1,3 @@
+[submodule "human"]
+	path = human
+	url = https://github.com/jdhiser/human-with-shibboleth

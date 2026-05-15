@@ -529,8 +529,66 @@ def setup_fileservers(cloud_config, enterprise, enterprise_built, only):
     return ret
 
 
+def build_workflows_zip():
+    """
+    Rebuild Downloads/workflows.zip from the pinned `human` submodule on
+    every post-deploy run. role_human's install_human_{linux,windows}
+    upload this zip to each endpoint; if it goes stale (e.g. someone
+    edited human/pyhuman/* but didn't repack), every node ends up with
+    out-of-date workflow code. Doing the repack here makes the submodule
+    the single source of truth -- no separate update-zip.sh step to
+    remember.
+
+    The deployed zip's layout is flat (app/..., data/..., human.py,
+    requirements.txt at the root); the submodule wraps the same tree in
+    a pyhuman/ directory. Strip that prefix when zipping.
+    """
+    workflow_root = os.path.dirname(os.path.abspath(__file__))
+    pyhuman_dir = os.path.join(workflow_root, 'human', 'pyhuman')
+    zip_path = os.path.join(workflow_root, 'Downloads', 'workflows.zip')
+    if not os.path.isdir(pyhuman_dir):
+        raise RuntimeError(
+            f"Submodule directory not found: {pyhuman_dir}. "
+            f"Did you forget `git submodule update --init --recursive`?"
+        )
+    os.makedirs(os.path.dirname(zip_path), exist_ok=True)
+    # Build a deterministic flat zip by enumerating the dirs we ship.
+    # Match the directory list of the historical workflows.zip:
+    # app/workflows, app/utility, data, human.py, requirements.txt.
+    import zipfile
+    members = []
+    for sub in ['app/workflows', 'app/utility', 'data']:
+        full = os.path.join(pyhuman_dir, sub)
+        if not os.path.isdir(full):
+            continue
+        for root, _, files in os.walk(full):
+            for f in files:
+                if f.startswith('.') or f.startswith('_'):
+                    continue
+                abs_path = os.path.join(root, f)
+                rel = os.path.relpath(abs_path, pyhuman_dir)
+                members.append((abs_path, rel))
+    for f in ['human.py', 'requirements.txt']:
+        abs_path = os.path.join(pyhuman_dir, f)
+        if os.path.isfile(abs_path):
+            members.append((abs_path, f))
+    if not members:
+        raise RuntimeError(f"No files found to zip in {pyhuman_dir}")
+    # Atomic rewrite so a partial zip never leaks to install_human.
+    tmp_zip = zip_path + ".tmp"
+    with zipfile.ZipFile(tmp_zip, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for abs_path, rel in sorted(members, key=lambda p: p[1]):
+            zf.write(abs_path, arcname=rel)
+    os.replace(tmp_zip, zip_path)
+    print(f"Built {zip_path} from {pyhuman_dir} ({len(members)} files)")
+
+
 def setup_enterprise(cloud_config, to_build, built, only):
     built['setup'] = {}
+    # Always (re)build the workflows.zip shipped to endpoints from the
+    # `human` submodule -- single source of truth, no chance of a stale
+    # zip from an older edit slipping into the deploy.
+    build_workflows_zip()
     built['setup']['windows_register'] = register_windows(to_build, built, only)
     built['setup']['setup_domains'] = deploy_domain_controllers(cloud_config, to_build, built, only)
     built['setup']['setup_fileservers'] = setup_fileservers(cloud_config, to_build, built, only)
