@@ -1,4 +1,5 @@
 import os
+import subprocess
 import time
 import role_fs
 import paramiko
@@ -7,6 +8,47 @@ from shell_handler import ShellHandler
 
 domain_safe_mode_password = 'hello!321'
 verbose = False
+
+
+def _verify_dns_only_game_ip(name, fqdn, game_ip, control_ip, dc_dns_ip, timeout_sec=120, poll_sec=5):
+    """
+    Poll the AD DNS at `dc_dns_ip` for `fqdn`'s A records and assert that only
+    `game_ip` is registered -- no `control_ip` and no other IPs. Raises
+    RuntimeError on timeout. Returns silently on success.
+
+    When `game_ip == control_ip` (single-network deployments), success just
+    requires the one IP to be there. The "no control_ip" assertion is
+    naturally satisfied.
+
+    Verifies from the bootstrap host using `dig` -- that's the same view a
+    domain client gets from AD DNS, no need to SSH back into the just-joined
+    node.
+    """
+    deadline = time.time() + timeout_sec
+    last_seen = None
+    while time.time() < deadline:
+        try:
+            r = subprocess.run(
+                ['dig', '+short', '+time=3', '+tries=1', f'@{dc_dns_ip}', fqdn, 'A'],
+                capture_output=True, text=True, timeout=10,
+            )
+            ips = [ln.strip() for ln in r.stdout.splitlines() if ln.strip() and not ln.startswith(';')]
+        except Exception as e:
+            ips = []
+            print(f"  [{name}] dns-verify dig error: {type(e).__name__}: {e}")
+        last_seen = ips
+        if ips == [game_ip]:
+            print(f"  [{name}] DNS verify OK: {fqdn} -> {game_ip}")
+            return
+        time.sleep(poll_sec)
+    # timed out -- fail loud
+    raise RuntimeError(
+        f"DNS verify failed for {fqdn} via {dc_dns_ip}: "
+        f"got {last_seen!r}, expected exactly [{game_ip!r}]. "
+        f"(control_ip={control_ip!r} must not appear; check that DDNS "
+        f"registration on the control adapter was disabled before the "
+        f"first post-join publish.)"
+    )
 
 gpupdate_str = """$MaxRetries = 15       # how many times to retry
 $DelaySeconds = 60    # wait time between retries
@@ -123,6 +165,13 @@ def deploy_forest(cloud_config, name, control_ipv4_addr, game_ipv4_addr, passwor
         ts "Step: Install-WindowsFeature AD-Domain-Services (END)"
         Import-Module ADDSDeployment
         $secure=ConvertTo-SecureString -asplaintext -string {domain_safe_mode_password} -force
+        ts "Step: Disable DDNS on control-adapter (pre-reboot)"
+        # Stop the control adapter's IP from being published in AD DNS when
+        # the first post-promotion DDNS update fires. Set-DnsClient writes
+        # a persistent per-interface flag, so it survives the reboot. The
+        # cmdlet is a no-op when the interface doesn't exist (single-net
+        # deployments where game_ip == control_ip).
+        Set-DnsClient -InterfaceAlias 'control-adapter' -RegisterThisConnectionsAddress $false -ConnectionSpecificSuffix '' -ErrorAction SilentlyContinue | Out-Null
         ts "Step: Install-ADDSForest (BEGIN)"
         Install-ADDSForest -domainname {domain_name} -SafeModeAdministratorPassword $secure -verbose -NoRebootOnCompletion:$true -Force:$true
         ts "Step: Install-ADDSForest (END)"
@@ -199,6 +248,16 @@ def deploy_forest(cloud_config, name, control_ipv4_addr, game_ipv4_addr, passwor
     shell = ShellHandler(control_ipv4_addr, user, password)
     stdout3, stderr3, exit_status3 = shell.execute_powershell_multiline(remove_control_network_from_dns_cmd, filename="fix-dns.ps1", verbose=verbose)
 
+    # Verify that dc1's own DNS A record contains only the game IP. dc1 is
+    # its own DNS server now; querying its game IP returns the AD-DDNS view.
+    _verify_dns_only_game_ip(
+        name=name,
+        fqdn=f"{name}.{domain_name}",
+        game_ip=game_ipv4_addr,
+        control_ip=control_ipv4_addr,
+        dc_dns_ip=game_ipv4_addr,
+    )
+
     return {
         "deploy_forest_results": {"name": name, "control_addr": control_ipv4_addr, "game_addr": game_ipv4_addr, "password": password, "domain": domain},
         "install_forest": {"stdout": stdout, "stderr": stderr, "exit_status": exit_status},
@@ -249,6 +308,12 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
         Import-Module ADDSDeployment
         Set-DnsClientServerAddress -serveraddress ('{}') -interfacealias 'game-adapter'
         Set-DnsClientServerAddress -serveraddress ('{}') -interfacealias 'control-adapter'
+        ts "Step: Disable DDNS on control-adapter (pre-reboot)"
+        # Persistent per-interface flag so the post-promotion DDNS update
+        # only publishes the game IP for this DC. Without it, a two-NIC dc
+        # registers both addresses and clients resolve dc2 round-robin to
+        # both, sending half their traffic over the control network.
+        Set-DnsClient -InterfaceAlias 'control-adapter' -RegisterThisConnectionsAddress $false -ConnectionSpecificSuffix '' -ErrorAction SilentlyContinue | Out-Null
         $passwd = convertto-securestring -AsPlainText -Force -String '{}'
         $cred = new-object -typename System.Management.Automation.PSCredential -argumentlist '{}\\administrator',$passwd
         $secure=ConvertTo-SecureString -asplaintext -string '{}' -force
@@ -352,6 +417,15 @@ def add_domain_controller(cloud_config, leader_details, name, control_ipv4_addr,
 
     print(f"  [{name}] Reboot complete, domain join verified!")
 
+    # Verify this DC's A record in AD DNS contains only the game IP.
+    _verify_dns_only_game_ip(
+        name=name,
+        fqdn=f"{name}.{domain_name}",
+        game_ip=game_ipv4_addr,
+        control_ip=control_ipv4_addr,
+        dc_dns_ip=game_leader_ip,
+    )
+
     return {
         "add_domain_results": {"name": name, "control_addr": control_ipv4_addr, "game_addr": game_ipv4_addr, "password": password, "domain": domain},
         "install_domain_controller": {"stdout": stdout, "stderr": stderr, "exit_status": exit_status},
@@ -406,6 +480,12 @@ ts "BEGIN join-domain ({name})"
 $passwd = convertto-securestring -AsPlainText -Force -String {leader_admin_password}
 $cred = new-object -typename System.Management.Automation.PSCredential -argumentlist 'administrator@{domain_name}',$passwd
 Set-DnsClientServerAddress -serveraddress ({domain_ips}) -interfacealias 'game-adapter'
+
+# Disable DDNS registration on the control adapter before the post-join
+# reboot fires the first DDNS update. The setting is a persistent
+# per-interface flag (-ErrorAction SilentlyContinue makes it a no-op when
+# the interface doesn't exist, e.g. single-network deployments).
+Set-DnsClient -InterfaceAlias 'control-adapter' -RegisterThisConnectionsAddress $false -ConnectionSpecificSuffix '' -ErrorAction SilentlyContinue | Out-Null
 
 # Retry Add-Computer up to 3 times
 $maxRetries = 5
@@ -517,6 +597,19 @@ ts "END join-domain ({name})"
         print(f"[{name}] verify_domain_stderr: {stderr2}")
         errstr = 'Cannot get domain information from ' + name
         raise RuntimeError(errstr)
+
+    # `domain_ips` is the comma-separated game-IP list of the domain
+    # leader(s); first entry is dc1's game IP, which is also the DNS
+    # server clients will query. Verify the freshly-joined node's name
+    # resolves only to its game IP (no control IP leaked into DDNS).
+    dc_dns_ip = domain_ips.split(',')[0].strip().strip('"').strip("'")
+    _verify_dns_only_game_ip(
+        name=name,
+        fqdn=f"{name}.{fqdn_domain_name}",
+        game_ip=game_ipv4_addr,
+        control_ip=control_ipv4_addr,
+        dc_dns_ip=dc_dns_ip,
+    )
 
     return {
         "join_domain": {"join-cmd": cmd, "stdout": stdout, "stderr": stderr, "exit_status": exit_status},
@@ -794,6 +887,42 @@ done
 
 sudo systemctl restart sshd sssd realmd chronyd
 
+# Stop SSSD before it gets a chance to fire its post-realm-join DDNS
+# update for this host. Once stopped, patch sssd.conf to tell SSSD to
+# only register the game-adapter interface in AD DNS, then start SSSD
+# again so the very first DDNS publish picks only the game IP. Without
+# this, SSSD's default `dyndns_update = True` plus the kernel's view of
+# both IPs ends up publishing both A records, and clients resolve the
+# hostname round-robin to both networks.
+sudo systemctl stop sssd
+# Find the interface that owns the game IP at runtime -- can't hardcode
+# ens3 because cloud images can rename interfaces (eno1, enp0s3, etc.).
+GAME_IP="{game_ipv4_addr}"
+GAME_IFACE=$(ip -o -4 addr show | awk -v ip="$GAME_IP" '$4 ~ "^"ip"/" {{print $2; exit}}')
+echo "[join_domain_linux] game iface for $GAME_IP: $GAME_IFACE"
+if [ -n "$GAME_IFACE" ]; then
+    # Insert/replace dyndns_iface within the [domain/...] block. sssd.conf
+    # is owned root:root mode 600.
+    sudo python3 -c "
+import re
+p = '/etc/sssd/sssd.conf'
+with open(p) as f: c = f.read()
+if 'dyndns_iface' in c:
+    c = re.sub(r'^dyndns_iface\\s*=.*$', 'dyndns_iface = $GAME_IFACE', c, flags=re.M)
+else:
+    # Add the directive within the [domain/...] section, after dyndns_update.
+    if 'dyndns_update' in c:
+        c = re.sub(r'(dyndns_update\\s*=\\s*\\S+)', r'\\1\\ndyndns_iface = $GAME_IFACE', c, count=1)
+    else:
+        c = re.sub(r'(\\[domain/[^\\]]+\\])', r'\\1\\ndyndns_iface = $GAME_IFACE', c, count=1)
+with open(p,'w') as f: f.write(c)
+"
+    sudo cat /etc/sssd/sssd.conf | grep -E 'dyndns'
+else
+    echo "[join_domain_linux] WARN: could not find iface for game IP; sssd.conf left at defaults"
+fi
+sudo systemctl start sssd
+
 # Domain users emulating "build_software" run "sudo apt-get install" without
 # any way to answer a password prompt — the HumanTyperShell just times out
 # waiting for the bash prompt. Grant NOPASSWD sudo to AD "domain users" so
@@ -874,6 +1003,18 @@ EOT
             errstr += ". Missing domain information."
         raise RuntimeError(errstr)
     print(f"  Reboot Completed for {name} by verifying computer is in the domain")
+
+    # `domain_ips` is the comma-separated game-IP list of the domain leader(s);
+    # first entry is dc1's game IP -- query that as the DNS server. Confirm
+    # this node's A record holds only its game IP, not its control IP.
+    dc_dns_ip = str(domain_ips).split(',')[0].strip().strip('"').strip("'").strip('[]')
+    _verify_dns_only_game_ip(
+        name=name,
+        fqdn=f"{name}.{fqdn_domain_name}",
+        game_ip=game_ipv4_addr,
+        control_ip=control_ipv4_addr,
+        dc_dns_ip=dc_dns_ip,
+    )
 
     return {
         "mount_home_dirs": role_fs.mount_home_directories_linux(obj),
