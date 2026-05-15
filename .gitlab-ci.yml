@@ -5,6 +5,11 @@ variables:
   IMAGE_TAG: "${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}"
   IMAGE_NAME: "${CI_REGISTRY_IMAGE}:${IMAGE_TAG}"
   BUILDX_CACHE_DIR: .docker-cache   # local-only; never uploaded
+  # Pull `human/` (and any future nested submodules) at checkout time so
+  # the Dockerfile's `COPY . /app` includes the pyhuman source. Without
+  # this, post-deploy's build_workflows_zip() step raises because the
+  # submodule directory is empty.
+  GIT_SUBMODULE_STRATEGY: recursive
 
 build_and_test:
   image: docker:24.0.5
